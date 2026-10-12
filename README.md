@@ -10,23 +10,168 @@ Usage-driven skill lifecycle for [Oh My Pi](https://github.com/can1357/oh-my-pi)
 
 ## Install
 
-Requires [Bun](https://bun.sh) ≥ 1.3. The [`skills`](https://www.npmjs.com/package/skills) CLI is only needed for `update` and `track`.
+### For humans
 
-```sh
-git clone git@github.com:nmindz/omp-curator.git ~/Projects/omp-curator
-ln -s ~/Projects/omp-curator/bin/omp-curator ~/.local/bin/omp-curator
-omp-curator init --dry-run   # preview the link migration and the first pass
-omp-curator init
-```
+Requirements: [Bun](https://bun.sh) ≥ 1.3, git, and OMP. The [`skills`](https://www.npmjs.com/package/skills) CLI is optional; only `update` and `track` use it.
 
-Register the extension (it also ships the `omp-curator` skill) in `~/.omp/agent/config.yml`:
+1. **Clone the repository.**
 
-```yaml
-extensions:
-  - ~/Projects/omp-curator
-```
+   ```sh
+   git clone git@github.com:nmindz/omp-curator.git ~/Projects/omp-curator
+   ```
+
+2. **Put the CLI on your `PATH`** and check that it runs.
+
+   ```sh
+   mkdir -p ~/.local/bin
+   ln -s ~/Projects/omp-curator/bin/omp-curator ~/.local/bin/omp-curator
+   omp-curator help
+   ```
+
+3. **Back up your skills** (recommended). `init` moves and deduplicates skill folders. Drop `.agents` from the command if `~/.agents` does not exist.
+
+   ```sh
+   mkdir -p ~/Backups
+   tar -czf ~/Backups/skills-before-omp-curator-$(date +%Y%m%d).tar.gz -C ~ .omp/agent/skills .agents
+   ```
+
+4. **Preview the setup.** Nothing is written.
+
+   ```sh
+   omp-curator init --dry-run
+   ```
+
+   Read the `link:` lines (what moves into the store, which duplicates are dropped, which conflicts are parked) and the `would …` lines (how each skill will be labelled).
+
+5. **Decide on automatic archiving.** By default, the weekly pass archives skills idle for 90 days. To archive only when you run it yourself:
+
+   ```sh
+   omp-curator config autoArchive false
+   ```
+
+6. **Initialize.** This links `~/.agents/skills` to the OMP store, backfills usage from every harness's history and labels each skill. It never archives anything.
+
+   ```sh
+   omp-curator init
+   ```
+
+7. **Register the OMP extension** in `~/.omp/agent/config.yml`. It also ships the `omp-curator` skill.
+
+   ```yaml
+   extensions:
+     - ~/Projects/omp-curator
+   ```
+
+8. **Restart OMP** (or `/reload`), then check:
+
+   ```sh
+   omp-curator status    # link → OMP store, counts per state, next automatic pass
+   omp-curator doctor    # stray links, lock drift, SKILL.md files OMP cannot load
+   ```
+
+   Inside OMP, `/curator status` answers the same way and the `skill_search` tool is available to agents.
 
 `init` makes `~/.agents/skills` a symlink to the OMP store. Existing entries move into the store. A store entry that was only a link into `~/.agents/skills` is replaced by the real directory, and an independent identical copy is dropped. An entry that differs from a same-named store skill is parked under `~/.omp/agent/curator/conflicts/`. `init` refuses to run when the store and `~/.agents/skills` resolve into each other. It then backfills usage from every session history and records each skill. The first pass labels skills but never archives anything. Automatic passes start one interval later.
+
+To uninstall: `omp-curator restore` every archived skill (`omp-curator list --state archived`), run `omp-curator unlink`, remove the `extensions:` entry and the `~/.local/bin/omp-curator` link, then delete `~/.omp/agent/curator`.
+
+### For AI agents
+
+Give this block to an agent (OMP, Claude Code, Codex, …) to install omp-curator for its user.
+
+````markdown
+# Task: install omp-curator for OMP
+
+omp-curator tracks skill usage across agent harnesses and archives unused OMP skills.
+Repository: git@github.com:nmindz/omp-curator.git (private; the user's `gh` or SSH login has access).
+
+## Rules
+- Do not run `omp-curator run`, `prune`, `archive` or `purge`. Installing never requires them.
+- Do not install packages with npm/npx. Bun is the only runtime needed.
+- Stop and ask the user at every step marked ASK. Do not decide for them.
+- Report each command's actual output; do not summarize from memory.
+
+## Steps
+1. Check prerequisites: `bun --version` (must be ≥ 1.3), `git --version`, and that
+   `~/.omp/agent/` exists. If one is missing, stop and tell the user.
+2. Clone: `git clone git@github.com:nmindz/omp-curator.git ~/Projects/omp-curator`
+   (if it already exists, `git -C ~/Projects/omp-curator pull --ff-only` instead).
+3. Link the CLI:
+   `mkdir -p ~/.local/bin && ln -sfn ~/Projects/omp-curator/bin/omp-curator ~/.local/bin/omp-curator`.
+   Confirm `command -v omp-curator` resolves. If `~/.local/bin` is not on PATH, tell the user;
+   do not edit their shell rc files.
+4. Back up: `mkdir -p ~/Backups && tar -czf ~/Backups/skills-before-omp-curator-$(date +%Y%m%d).tar.gz -C ~ .omp/agent/skills .agents`
+   (omit `.agents` if it does not exist). Report the archive path and size.
+5. Preview: `omp-curator init --dry-run`. Show the user the `link:` lines and the count of
+   `would` lines. ASK: proceed with init?
+6. ASK: should the weekly automatic pass archive idle skills (default), or only label them?
+   If "only label": `omp-curator config autoArchive false`.
+7. Initialize: `omp-curator init`.
+8. Register the extension: add `~/Projects/omp-curator` under `extensions:` in
+   `~/.omp/agent/config.yml`, keeping existing entries. Do not duplicate it if present.
+9. Verify: `omp-curator status` (expect `link: … → OMP store`) and `omp-curator doctor`.
+   Report warnings verbatim; do not fix them without asking.
+10. Tell the user to restart OMP (or run `/reload`) so the extension and the
+    `omp-curator` skill load, and that `omp-curator run --dry-run` previews archiving.
+````
+
+## Routine: check, preview, archive
+
+Run the read-only steps whenever you like. Only step 4 moves skills.
+
+```mermaid
+flowchart LR
+  A[1. scan + check] --> B[2. run --dry-run]
+  B --> C[3. pin / protect / tune]
+  C --> B
+  B --> D[4. archive]
+  D --> E[5. ledger / restore]
+```
+
+1. **Refresh and check** (read-only except for the usage cache).
+
+   ```sh
+   omp-curator scan                    # pull new usage from every harness
+   omp-curator status                  # counts per state, last and next automatic pass
+   omp-curator list --state due        # what the next pass would archive
+   omp-curator list --sort idle        # whole library, longest idle first
+   omp-curator show <skill>            # the usage events behind one skill
+   ```
+
+2. **Preview the pass.** Writes nothing.
+
+   ```sh
+   omp-curator run --dry-run
+   ```
+
+   Each `would …` line is a change the pass would make: `stale → archived`, `active → stale`, a dormant skill promoted back to `active`, or a deleted skill dropped from the state.
+
+3. **Adjust, then preview again.**
+
+   ```sh
+   omp-curator pin <skill...>                  # never archive these automatically
+   omp-curator config protect '["k8s-*"]'      # same, by glob
+   omp-curator config archiveAfterDays 120     # move the cutoff
+   ```
+
+4. **Archive** — pick one:
+
+   | You want | Command |
+   |---|---|
+   | Exactly what the dry run showed | `omp-curator run` |
+   | Only specific skills | `omp-curator archive <skill...> --reason "…"` |
+   | Everything idle past your own cutoff | `omp-curator prune --days 60 --dry-run`, then the same without `--dry-run` |
+
+   Archived skills leave the system prompt of sessions started afterwards and stay loadable on demand (see [Lazy loading](#lazy-loading)).
+
+5. **Audit and undo.**
+
+   ```sh
+   omp-curator ledger --limit 50      # every lifecycle change, newest last
+   omp-curator restore <skill...>     # bring skills back (starts a fresh grace period)
+   ```
+
+The OMP extension also runs a pass once per `intervalHours` (weekly). With `autoArchive` on, that pass archives `due` skills by itself; with `autoArchive false` it only labels them and archiving happens only through step 4. `status` shows when the next automatic pass is due.
 
 ## Usage sources
 
@@ -90,17 +235,30 @@ A skill restored or installed during a session is not in that session's skill li
 
 `omp-curator config lazyLoad false` turns all of this off: dormant skills are unreachable until restored.
 
-## Commands
+## Command reference
 
-```text
-status | list [--state S] [--sort K] [--json] | show <skill> | scan | run [--dry-run]
-search <query...> | archive <skill...> [--reason TEXT] | restore <skill...> | pin|unpin <skill...>
-prune [--days N] [--dry-run] | purge <skill...> | ledger [--limit N]
-update [skill...] [--dry-run] | track <skill> <source> | sources <skill>
-doctor [--fix] | config [key [value]] | init | link | unlink
-```
+Inside OMP, run any command as `/curator <command>`, plus `/curator load <skill> [args]` to inject a dormant skill.
 
-Inside OMP, run the same commands as `/curator <command>`, plus `/curator load <skill> [args]`.
+| Command | Changes | What it does |
+|---|---|---|
+| `status` | nothing | Store, link, counts per state, last pass and next automatic pass, longest idle skills. |
+| `list [--state S] [--sort K] [--json]` | nothing | Skills with uses, last use, idle days and harnesses. `S`: `active`, `stale`, `due`, `archived`, `all`. `K`: `name`, `uses`, `idle`, `last`, `tokens`. |
+| `show <skill>` | nothing | State, origin, use counts by kind and recent evidence for one skill. |
+| `search <query...>` | nothing | Dormant skills matching task keywords, with match scores. |
+| `ledger [--limit N]` | nothing | Recent lifecycle changes. |
+| `scan` | usage cache | Reads new session history from every enabled source. No labels change. |
+| `run --dry-run` | nothing | Previews a full pass: scan, promotions, relabels, archives. |
+| `run` | state, store | The full pass: scan, promote re-used dormant skills, relabel, archive `due` skills when `autoArchive` is on, enforce `maxActive`. |
+| `archive <skill...> [--reason TEXT]` | state, store | Makes skills dormant now, whatever their idle time. |
+| `restore <skill...>` | state, store | Moves archived skills back and re-adds their `skills` lock entries. |
+| `pin` / `unpin <skill...>` | state | Protects skills from automatic archiving. |
+| `prune [--days N] [--dry-run]` | state, store | Archives every unprotected skill idle ≥ N days (default `archiveAfterDays`). Without `--dry-run` it first runs a pass that relabels but never archives. |
+| `purge <skill...>` | deletes | Permanently deletes archived copies. No undo. |
+| `update [skill...] [--dry-run]` | store | Reinstalls skills whose upstream changed, OMP-only. |
+| `track <skill> <source>` / `sources <skill>` | store / nothing | Puts a hand-copied skill under `skills` version tracking / finds published sources for it. |
+| `doctor [--fix]` | nothing / links | Link state, stray `skills` links in other harnesses, lock drift, invalid SKILL.md files. `--fix` removes stray links. |
+| `config [key [value]]` | config | Shows or sets one option; values are JSON. |
+| `init [--dry-run]` / `link` / `unlink` | store, state | First-time setup / the `~/.agents/skills` link alone. |
 
 ## Working with `skills`
 
