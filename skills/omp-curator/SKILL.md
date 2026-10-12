@@ -24,7 +24,7 @@ Report numbers from the tool, never from memory or file timestamps.
 | Evidence for one skill | `omp-curator show <skill>` |
 | Machine-readable | add `--json` to `list` |
 
-Usage counts only structured invocations: OMP `skill://` reads, SKILL.md reads, `/skill:` commands, subagent `autoloadSkills`, Claude Code `Skill` tool calls and OpenCode `skill` tool calls. Shell commands that merely touch a skill directory are tallied as *mentions* and never count as use. `idle` is measured from the later of the last use and the time the skill became available, so a newly installed skill is never instantly stale.
+Usage counts only structured invocations, backfilled from every session already on disk: OMP `skill://` reads, SKILL.md reads, `/skill:` commands and subagent `autoloadSkills`; Claude Code `Skill` tool calls and slash commands; OpenCode and DSH `skill` tool calls; Codex `$skill` invocations and shell reads of a SKILL.md. Shell commands that merely touch a skill directory are tallied as *mentions* and never count as use. `idle` is measured from the later of the last use and the time the skill became available, so a newly installed skill is never instantly stale.
 
 Run `omp-curator scan` first when the user asks about very recent activity.
 

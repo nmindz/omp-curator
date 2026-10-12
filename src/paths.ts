@@ -24,6 +24,10 @@ export interface Paths {
 	lockPath: string;
 	claudeProjectsDir: string;
 	opencodeDb: string;
+	/** Codex rollouts: `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`. */
+	codexSessionsDirs: string[];
+	/** DeepSeek Harness sessions (`$DSH_HOME/sessions`). */
+	dshSessionsDir: string;
 }
 
 export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
@@ -31,6 +35,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
 	const agentDir = env.PI_CODING_AGENT_DIR || join(home, ".omp", "agent");
 	const curatorDir = env.OMP_CURATOR_HOME || join(agentDir, "curator");
 	const dataHome = env.XDG_DATA_HOME || join(home, ".local", "share");
+	const codexHome = env.CODEX_HOME || join(home, ".codex");
 	return {
 		home,
 		agentDir,
@@ -52,5 +57,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
 			: join(home, ".agents", ".skill-lock.json"),
 		claudeProjectsDir: join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"), "projects"),
 		opencodeDb: join(dataHome, "opencode", "opencode.db"),
+		codexSessionsDirs: [join(codexHome, "sessions"), join(codexHome, "archived_sessions")],
+		dshSessionsDir: join(env.DSH_HOME || join(home, ".dsh"), "sessions"),
 	};
 }

@@ -46,7 +46,7 @@ export const DEFAULT_CONFIG: CuratorConfig = {
 	promoteAfterUses: 2,
 	maxActive: 0,
 	protect: [],
-	sources: { omp: true, claude: true, opencode: true },
+	sources: { omp: true, claude: true, opencode: true, codex: true, dsh: true },
 	skillsCommand: "skills",
 };
 

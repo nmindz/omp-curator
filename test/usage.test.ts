@@ -93,6 +93,87 @@ describe("Claude Code transcripts", () => {
 	});
 });
 
+describe("Codex rollouts", () => {
+	const line = (timestamp: string, payload: Record<string, unknown>) => ({ timestamp, type: "response_item", payload });
+	const call = (timestamp: string, name: string, args: Record<string, unknown>) =>
+		line(timestamp, { type: "function_call", name, arguments: JSON.stringify(args), call_id: "c" });
+
+	test("$skill injections and shell reads of SKILL.md count; other shell commands are mentions", async () => {
+		box = await sandbox();
+		const [sessions, archived] = box.paths.codexSessionsDirs;
+		await box.writeJsonl(join(sessions!, "2026", "10", "12", "rollout-a.jsonl"), [
+			// The prompt text itself is not an invocation; the injected <skill> message is.
+			line("2026-10-12T10:00:00Z", { type: "message", role: "user", content: [{ type: "input_text", text: "$jj what should I use?" }] }),
+			line("2026-10-12T10:00:01Z", {
+				type: "message",
+				role: "user",
+				content: [{ type: "input_text", text: "<skill>\n<name>jj</name>\n<path>/h/.omp/agent/skills/jj/SKILL.md</path>\n---\nname: jj\n---" }],
+			}),
+			call("2026-10-12T10:01:00Z", "exec_command", { cmd: "sed -n '1,200p' /h/.omp/agent/skills/herdr/SKILL.md" }),
+			call("2026-10-12T10:02:00Z", "exec_command", { cmd: "rg -n push /h/.omp/agent/skills/build/SKILL.md" }),
+			{ timestamp: "2026-10-12T10:03:00Z", type: "event_msg", payload: { type: "user_message", message: "<skill>\n<name>explore</name>\n<path>x</path>" } },
+		]);
+		await box.writeJsonl(join(archived!, "rollout-b.jsonl"), [call("2026-09-01T00:00:00Z", "shell", { command: ["bash", "-lc", "cat /h/.agents/skills/explore/SKILL.md"] })]);
+		const db = emptyDb();
+		await scanUsage({ paths: box.paths, db, known: KNOWN }, { omp: false, claude: false, opencode: false, dsh: false });
+		expect(db.events.map(event => [event.skill, event.kind, event.harness]).sort()).toEqual([
+			["build", "mention", "codex"],
+			["explore", "file", "codex"],
+			["herdr", "file", "codex"],
+			["jj", "command", "codex"],
+		]);
+	});
+});
+
+describe("DeepSeek Harness sessions", () => {
+	const at = (minute: number) => Date.UTC(2026, 8, 20, 10, minute);
+	const toolCall = (minute: number, name: string, args: Record<string, unknown>) => ({
+		type: "tool/call",
+		time: at(minute),
+		data: { name, arguments: JSON.stringify(args) },
+	});
+	async function writeZstd(path: string, entries: unknown[]) {
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(path, Bun.zstdCompressSync(Buffer.from(entries.map(entry => `${JSON.stringify(entry)}\n`).join(""))));
+	}
+	const base = [
+		{ type: "session", version: 2, id: "s" },
+		// The available-skills reminder lists every skill; it is not a use.
+		{ type: "user/message", time: at(0), data: { content: [{ type: "text", text: "<available_skills>\n- `jj`: ... /skills/jj/SKILL.md" }] } },
+		toolCall(1, "skill", { name: "jj" }),
+		toolCall(2, "read", { file_path: "/h/.dsh/skills/herdr/SKILL.md" }),
+		toolCall(3, "bash", { command: "ls ~/.dsh/skills/build" }),
+		{ type: "user/message", time: at(4), data: { source: { kind: "skill-invocation", name: "explore", form: "instructions" }, content: [] } },
+	];
+
+	test("skill tool, SKILL.md reads and /skill invocations, read incrementally from zstd files", async () => {
+		box = await sandbox();
+		const file = join(box.paths.dshSessionsDir, "--p--", "id", "session.v4.jsonl.zstd");
+		await writeZstd(file, base);
+		const db = emptyDb();
+		const scan = (dbArg: UsageDb) => scanUsage({ paths: box.paths, db: dbArg, known: KNOWN }, { omp: false, claude: false, opencode: false, codex: false });
+		await scan(db);
+		expect(db.events.map(event => [event.skill, event.kind, event.harness])).toEqual([
+			["jj", "skill-tool", "dsh"],
+			["herdr", "file", "dsh"],
+			["build", "mention", "dsh"],
+			["explore", "command", "dsh"],
+		]);
+
+		// Unchanged: nothing re-read. Appended and recompressed: only the new line is added.
+		expect((await scan(db)).dsh).toEqual({ added: 0, files: 0 });
+		await writeZstd(file, [...base, toolCall(5, "skill", { name: "build" })]);
+		expect((await scan(db)).dsh?.added).toBe(1);
+		expect(db.events.filter(event => event.skill === "jj")).toHaveLength(1);
+
+		// A rewritten history replaces the file's events instead of duplicating them.
+		// Same length or longer, so only the fingerprint before the cursor reveals the rewrite.
+		await writeZstd(file, [{ type: "session", version: 2, id: "rewritten", pad: "x".repeat(3000) }, toolCall(6, "skill", { name: "jj" })]);
+		await scan(db);
+		expect(db.events.map(event => [event.skill, event.kind])).toEqual([["jj", "skill-tool"]]);
+	});
+});
+
 describe("OpenCode database", () => {
 	const part = (tool: string, input: Record<string, unknown>, status = "completed") => JSON.stringify({ type: "tool", tool, state: { status, input } });
 	const createDb = (path: string) => {

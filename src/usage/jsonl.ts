@@ -62,14 +62,37 @@ export function entryTime(entry: Record<string, unknown>): string | undefined {
 	return undefined;
 }
 
-export async function listJsonl(root: string): Promise<string[]> {
+/** Files under `root` (recursively) whose name ends with `suffix`. */
+export async function listFiles(root: string, suffix: string): Promise<string[]> {
 	try {
 		const rel = await readdir(root, { recursive: true });
-		return rel.filter(path => path.endsWith(".jsonl")).map(path => join(root, path));
+		return rel.filter(path => path.endsWith(suffix)).map(path => join(root, path));
 	} catch {
 		return [];
 	}
 }
+
+export const listJsonl = (root: string): Promise<string[]> => listFiles(root, ".jsonl");
+
+function parseLines(text: string, parser: JsonlParser, ctx: ParseContext, emit: Emit): void {
+	for (const line of text.split("\n")) {
+		if (!parser.needles.some(needle => line.includes(needle))) continue;
+		try {
+			parser.parse(JSON.parse(line) as Record<string, unknown>, ctx, emit);
+		} catch {
+			// torn or non-JSON line
+		}
+	}
+}
+
+function emitter(ctx: ScanContext, harness: string, key: string, counter: { added: number }): Emit {
+	return (skill, kind, at) => {
+		ctx.db.events.push({ skill, kind, at, harness, src: key } satisfies UsageEvent);
+		counter.added++;
+	};
+}
+
+const sha1 = (data: Uint8Array): string => createHash("sha1").update(data).digest("hex");
 
 /** Bytes before the cursor fingerprinted to detect rewrites that keep or grow the size. */
 const TAIL_BYTES = 64;
@@ -78,7 +101,7 @@ async function readTail(handle: FileHandle, offset: number): Promise<string> {
 	const length = Math.min(TAIL_BYTES, offset);
 	const buffer = Buffer.alloc(length);
 	await handle.read(buffer, 0, length, offset - length);
-	return createHash("sha1").update(buffer).digest("hex");
+	return sha1(buffer);
 }
 
 /**
@@ -95,7 +118,7 @@ export async function scanJsonlFiles(
 ): Promise<ScanResult> {
 	const { db } = ctx;
 	const parseCtx: ParseContext = { known: ctx.known, archiveDir: ctx.paths.archiveDir };
-	let added = 0;
+	const counter = { added: 0 };
 	let scanned = 0;
 	for (const file of files) {
 		let handle: FileHandle;
@@ -116,10 +139,7 @@ export async function scanJsonlFiles(
 				else db.events = db.events.filter(event => event.src !== key);
 			}
 			scanned++;
-			const emit: Emit = (skill, kind, at) => {
-				db.events.push({ skill, kind, at, harness, src: key } satisfies UsageEvent);
-				added++;
-			};
+			const emit = emitter(ctx, harness, key, counter);
 			let pos = start;
 			let carry = Buffer.alloc(0);
 			while (pos < info.size) {
@@ -134,14 +154,7 @@ export async function scanJsonlFiles(
 					carry = data;
 					continue;
 				}
-				for (const line of data.subarray(0, end).toString("utf8").split("\n")) {
-					if (!parser.needles.some(needle => line.includes(needle))) continue;
-					try {
-						parser.parse(JSON.parse(line) as Record<string, unknown>, parseCtx, emit);
-					} catch {
-						// torn or non-JSON line
-					}
-				}
+				parseLines(data.subarray(0, end).toString("utf8"), parser, parseCtx, emit);
 				carry = data.subarray(end + 1);
 			}
 			// A trailing line without newline is still being written; re-read it next time.
@@ -151,5 +164,51 @@ export async function scanJsonlFiles(
 			await handle.close();
 		}
 	}
-	return { added, files: scanned };
+	return { added: counter.added, files: scanned };
+}
+
+/**
+ * Same as {@link scanJsonlFiles} for zstd-compressed JSONL that the writer recompresses
+ * whole on every save. A changed file is decompressed and only the decompressed bytes past
+ * the cursor are parsed, as long as the bytes before it are unchanged.
+ */
+export async function scanZstdJsonlFiles(
+	ctx: ScanContext,
+	harness: string,
+	files: string[],
+	parser: JsonlParser,
+): Promise<ScanResult> {
+	const { db } = ctx;
+	const parseCtx: ParseContext = { known: ctx.known, archiveDir: ctx.paths.archiveDir };
+	const counter = { added: 0 };
+	let scanned = 0;
+	for (const file of files) {
+		const key = `${harness}:${file}`;
+		let text: Uint8Array;
+		let info: { size: number; mtimeMs: number };
+		try {
+			const handle = Bun.file(file);
+			info = await handle.stat();
+			const cursor = db.cursors[key];
+			if (cursor && cursor.size === info.size && cursor.mtimeMs === info.mtimeMs) continue;
+			text = Bun.zstdDecompressSync(await handle.bytes());
+		} catch {
+			// unreadable, or caught mid-write
+			continue;
+		}
+		scanned++;
+		const cursor = db.cursors[key];
+		let start = 0;
+		if (cursor) {
+			const from = Math.max(0, cursor.offset - TAIL_BYTES);
+			const intact = text.length >= cursor.offset && sha1(text.subarray(from, cursor.offset)) === cursor.tail;
+			if (intact) start = cursor.offset;
+			else db.events = db.events.filter(event => event.src !== key);
+		}
+		const end = text.lastIndexOf(10) + 1;
+		if (end > start) parseLines(Buffer.from(text.subarray(start, end)).toString("utf8"), parser, parseCtx, emitter(ctx, harness, key, counter));
+		const offset = Math.max(start, end);
+		db.cursors[key] = { size: info.size, mtimeMs: info.mtimeMs, offset, tail: sha1(text.subarray(Math.max(0, offset - TAIL_BYTES), offset)) };
+	}
+	return { added: counter.added, files: scanned };
 }

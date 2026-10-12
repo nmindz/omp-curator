@@ -2,7 +2,7 @@
 
 Usage-driven skill lifecycle for [Oh My Pi](https://github.com/can1357/oh-my-pi) (OMP), modelled on the [Hermes Agent curator](https://hermes-agent.nousresearch.com/docs/user-guide/features/curator) and compatible with [vercel-labs/skills](https://github.com/vercel-labs/skills).
 
-- **Measures real usage** from session logs: OMP `skill://` reads, `/skill:` commands and subagent `autoloadSkills`, plus Claude Code and OpenCode history. Shell commands that only touch a skill directory count as *mentions*, never as use.
+- **Measures real usage** from the session history of five harnesses: OMP, Claude Code, OpenCode, Codex and DeepSeek Harness (DSH). `init` backfills everything already on disk, so rankings start from your past sessions, not from zero. Shell commands that only touch a skill directory count as *mentions*, never as use.
 - **Lifecycle** `active → stale → archived`, with pins, protect globs, and agents' `autoloadSkills` protected automatically. Archiving is a move. Nothing is deleted unless you `purge`.
 - **Lazy loading.** Only active skills are listed in the system prompt. Archived skills become *dormant*: they cost no prompt tokens but still load on demand through `skill://`, `/skill:`, prompt hints and the `skill_search` tool. A dormant skill that gets used again is promoted back to active.
 - **One store.** `~/.omp/agent/skills` holds the only copy of every skill, and `~/.agents/skills` (the `skills` CLI canonical root) is a symlink to it. `skills add -g` installs straight into OMP, and `skills ls -g` lists every OMP skill.
@@ -27,6 +27,20 @@ extensions:
 ```
 
 `init` makes `~/.agents/skills` a symlink to the OMP store. Existing entries move into the store. A store entry that was only a link into `~/.agents/skills` is replaced by the real directory, and an independent identical copy is dropped. An entry that differs from a same-named store skill is parked under `~/.omp/agent/curator/conflicts/`. `init` refuses to run when the store and `~/.agents/skills` resolve into each other. It then backfills usage from every session history and records each skill. The first pass labels skills but never archives anything. Automatic passes start one interval later.
+
+## Usage sources
+
+| Harness | Read from | Counted as use |
+|---|---|---|
+| OMP | `~/.omp/agent/sessions/**/*.jsonl` | `read skill://…`, SKILL.md reads (including dormant copies), `/skill:` commands, subagent `autoloadSkills` |
+| Claude Code | `~/.claude/projects/**/*.jsonl` (`CLAUDE_CONFIG_DIR`) | `Skill` tool calls, `Read` of a SKILL.md, `/<skill>` slash commands |
+| OpenCode | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME`) | `skill` tool calls, `read` of a SKILL.md |
+| Codex | `~/.codex/sessions` and `archived_sessions` (`CODEX_HOME`) | `$skill` invocations (the injected `<skill>` message), shell commands that print a SKILL.md (`cat`, `sed -n`, `head`, …) |
+| DSH | `~/.dsh/sessions/**/session.v*.jsonl.zstd` (`DSH_HOME`) | `skill` tool calls, `read` of a SKILL.md, `/<skill>` invocations |
+
+Each event is attributed to a skill by name, so a skill counts wherever it was used, even if another harness kept its own copy. Many SKILL.md reads in one session within minutes are a bulk scan, not a use, and are discounted. Scans are incremental: cursors remember how far each file or database was read, and a rewritten file is re-read from the start. `omp-curator scan` pulls new evidence on demand; every pass does it too.
+
+Rankings come straight from this evidence: `omp-curator list --sort uses` (or `idle`, `last`, `tokens`), and `omp-curator show <skill>` for the events behind one skill. The pass ranks skills over `maxActive` the same way: fewest uses in `archiveAfterDays` first, then oldest last use.
 
 ## Lifecycle
 
@@ -118,7 +132,7 @@ Inside OMP, run the same commands as `/curator <command>`, plus `/curator load <
 | `promoteAfterUses` | `2` | lazy loads within `staleAfterDays` that restore a dormant skill (`0` disables) |
 | `maxActive` | `0` | maximum active and stale skills; `0` means no cap |
 | `protect` | `[]` | `*` globs never archived automatically |
-| `sources` | `{"omp":true,"claude":true,"opencode":true}` | usage sources to scan |
+| `sources` | `{"omp":true,"claude":true,"opencode":true,"codex":true,"dsh":true}` | usage sources to scan |
 | `skillsCommand` | `"skills"` | `skills` CLI used by `update` and `track` |
 
 `PI_CODING_AGENT_DIR` relocates the OMP agent directory, `OMP_CURATOR_HOME` the curator directory, and `XDG_STATE_HOME` the `skills` lock exactly as the `skills` CLI does.
@@ -138,7 +152,7 @@ Inside OMP, run the same commands as `/curator <command>`, plus `/curator load <
 
 ## Extending
 
-- **Usage sources** implement `UsageSource` (`src/usage/types.ts`) and are listed in `src/usage/index.ts`. A source scans incrementally: it keeps cursors in `db.cursors` and appends events. JSONL harnesses can reuse `scanJsonlFiles` with a `JsonlParser`.
+- **Usage sources** implement `UsageSource` (`src/usage/types.ts`) and are listed in `src/usage/index.ts`. A source scans incrementally: it keeps cursors in `db.cursors` and appends events. JSONL harnesses can reuse `scanJsonlFiles` with a `JsonlParser`, and `scanZstdJsonlFiles` for zstd-compressed JSONL.
 - **Integrations** implement `Integration` (`src/integrations/types.ts`). `beforeArchive` captures data without side effects; the capture is persisted with the archive intent. `afterArchive` applies the change once the skill has moved, and `afterRestore` undoes it with the same capture. Both must be idempotent, because `sync()` replays them for interrupted operations. `origins` labels listings, and `doctor` / `fix` report and repair. The `skills` lock handling in `src/integrations/vercel/` is the reference implementation.
 
 ## Development
