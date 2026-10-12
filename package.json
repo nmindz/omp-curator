@@ -1,0 +1,20 @@
+{
+  "name": "omp-curator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Usage-driven skill lifecycle (active, stale, archived) for Oh My Pi, compatible with vercel-labs/skills.",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "bin": {
+    "omp-curator": "./bin/omp-curator"
+  },
+  "omp": {
+    "extensions": ["./src/extension.ts"]
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "engines": {
+    "bun": ">=1.3"
+  }
+}
