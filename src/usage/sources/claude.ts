@@ -4,7 +4,7 @@ import type { UsageSource } from "../types.ts";
 
 export const claudeParser: JsonlParser = {
 	needles: ['"Skill"', "SKILL.md", "/skills/", "<command-name>"],
-	parse(entry, known, emit) {
+	parse(entry, { known }, emit) {
 		const at = entryTime(entry);
 		const message = entry.message as { content?: unknown } | undefined;
 		if (!at || !message) return;

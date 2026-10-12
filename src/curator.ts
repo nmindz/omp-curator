@@ -9,7 +9,7 @@ import { resolvePaths } from "./paths.ts";
 import type { Paths } from "./paths.ts";
 import { appendLedger, loadConfig, loadState, saveState } from "./store.ts";
 import type { CuratorConfig, CuratorState, LedgerEntry, SkillRecord } from "./store.ts";
-import { aggregate, loadUsage, mergeUsage, saveUsage } from "./usage/db.ts";
+import { aggregate, bulkFileReads, loadUsage, mergeUsage, saveUsage } from "./usage/db.ts";
 import type { SkillUsage } from "./usage/db.ts";
 import { USAGE_SOURCES, scanUsage } from "./usage/index.ts";
 import type { ScanResult, UsageDb, UsageSource } from "./usage/types.ts";
@@ -278,9 +278,26 @@ export class Curator {
 		return out;
 	}
 
+	/** Uses per store key (directory and registered name merged) at or after `since`. */
+	usesSince(since: string): Map<string, number> {
+		const bulk = bulkFileReads(this.usage.events);
+		const byName = new Map<string, number>();
+		for (const event of this.usage.events) {
+			if (event.kind === "mention" || event.at < since || bulk.has(event)) continue;
+			byName.set(event.skill, (byName.get(event.skill) ?? 0) + 1);
+		}
+		const out = new Map<string, number>();
+		for (const [name, record] of Object.entries(this.state.skills)) {
+			const count = (byName.get(name) ?? 0) + (record.registeredName ? (byName.get(record.registeredName) ?? 0) : 0);
+			if (count) out.set(name, count);
+		}
+		return out;
+	}
+
 	/**
-	 * Scan usage, reconcile the store, relabel stale skills and archive due ones. A dry run
-	 * works on a copy of the state and writes nothing.
+	 * Scan usage, reconcile the store, promote dormant skills that are lazy-loaded again,
+	 * relabel stale skills, archive due ones and enforce `maxActive`. A dry run works on a
+	 * copy of the state and writes nothing.
 	 */
 	async run(actor: Actor, options: { dryRun?: boolean; allowArchive?: boolean; adopt?: boolean } = {}): Promise<RunReport> {
 		const dryRun = options.dryRun ?? false;
@@ -289,6 +306,22 @@ export class Curator {
 		const scan = await this.scan();
 		const transitions = await this.sync(actor, dryRun, options.adopt ?? false);
 		const now = this.now.toISOString();
+		const dayMs = 86_400_000;
+
+		if (this.config.promoteAfterUses > 0) {
+			const windowStart = new Date(this.now.getTime() - this.config.staleAfterDays * dayMs).toISOString();
+			for (const [name, record] of Object.entries(this.state.skills)) {
+				if (record.state !== "archived" || !record.archive || record.archive.pending) continue;
+				const since = record.archive.at > windowStart ? record.archive.at : windowStart;
+				const loads = this.usesSince(since).get(name) ?? 0;
+				if (loads < this.config.promoteAfterUses) continue;
+				transitions.push({ name, from: "archived", to: "active", detail: `promoted: loaded ${loads}× while dormant` });
+				if (!dryRun) await this.restore(name, actor, "promote");
+				else Object.assign(record, { state: "active", stateSince: now, floorAt: now, floorSource: "reset" });
+			}
+		}
+
+		const remaining: Assessment[] = [];
 		for (const item of await this.assess()) {
 			if (item.status === "archived") continue;
 			if (item.status === "due" && allowArchive) {
@@ -296,6 +329,7 @@ export class Curator {
 				if (!dryRun) await this.archive(item.name, `idle ${item.idleDays} days`, actor);
 				continue;
 			}
+			remaining.push(item);
 			const label = item.status === "due" ? "stale" : item.status;
 			if (label === item.record.state) continue;
 			transitions.push({ name: item.name, from: item.record.state, to: label, detail: `idle ${item.idleDays}d` });
@@ -303,6 +337,25 @@ export class Curator {
 			item.record.stateSince = now;
 			if (!dryRun) await this.ledger(actor, label, item.name, `idle ${item.idleDays}d`);
 		}
+
+		if (allowArchive && this.config.maxActive > 0 && remaining.length > this.config.maxActive) {
+			const recent = this.usesSince(new Date(this.now.getTime() - this.config.archiveAfterDays * dayMs).toISOString());
+			const evictable = remaining
+				.filter(item => !item.protectedBy && daysBetween(item.record.floorAt, this.now) >= this.config.staleAfterDays)
+				.sort(
+					(a, b) =>
+						(recent.get(a.name) ?? 0) - (recent.get(b.name) ?? 0) ||
+						(a.usage?.lastUsed ?? "").localeCompare(b.usage?.lastUsed ?? "") ||
+						a.name.localeCompare(b.name),
+				);
+			const excess = remaining.length - this.config.maxActive;
+			for (const item of evictable.slice(0, excess)) {
+				const uses = recent.get(item.name) ?? 0;
+				transitions.push({ name: item.name, from: item.record.state, to: "archived", detail: `over maxActive ${this.config.maxActive}: ${uses} recent uses` });
+				if (!dryRun) await this.archive(item.name, `over maxActive (${uses} uses in ${this.config.archiveAfterDays}d)`, actor);
+			}
+		}
+
 		if (snapshot) {
 			// structuredClone drops the null prototype `loadState` gives the skill map.
 			this.state = { ...snapshot, skills: Object.assign(Object.create(null), snapshot.skills) };
@@ -350,7 +403,7 @@ export class Curator {
 		return dest;
 	}
 
-	async restore(name: string, actor: Actor): Promise<string> {
+	async restore(name: string, actor: Actor, action = "restore"): Promise<string> {
 		const record = Object.hasOwn(this.state.skills, name) ? this.state.skills[name] : undefined;
 		if (record?.state !== "archived" || !record.archive) throw new Error(`"${name}" is not archived`);
 		const dest = join(this.paths.skillsDir, name);
@@ -367,7 +420,7 @@ export class Curator {
 		delete record.entryId;
 		delete record.archive;
 		await this.save();
-		await this.ledger(actor, "restore", name);
+		await this.ledger(actor, action, name);
 		return dest;
 	}
 

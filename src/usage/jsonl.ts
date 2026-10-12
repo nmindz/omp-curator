@@ -12,10 +12,16 @@ export const SKILL_MD_RE = /\/skills\/([^/\s]+)\/SKILL\.md(?::[\d+,-]*)?$/;
 
 export type Emit = (skill: string, kind: UsageKind, at: string) => void;
 
+export interface ParseContext {
+	known: Set<string>;
+	/** Curator archive root; reads of a dormant skill's files there are lazy loads. */
+	archiveDir: string;
+}
+
 export interface JsonlParser {
 	/** A line must contain one of these substrings before it is parsed. */
 	needles: string[];
-	parse(entry: Record<string, unknown>, known: Set<string>, emit: Emit): void;
+	parse(entry: Record<string, unknown>, ctx: ParseContext, emit: Emit): void;
 }
 
 /** Map `skill://name[/...]` or `skill://namespace/name` to an installed skill name. */
@@ -25,6 +31,16 @@ export function skillFromUrl(url: string, known: Set<string>): string | undefine
 	const [, first, second] = match;
 	if (known.has(first!) || !second || !known.has(second)) return first;
 	return second;
+}
+
+/**
+ * Skill whose archived SKILL.md a path reads (`<archiveDir>/<name>[@stamp]/SKILL.md[:sel]`).
+ * The extension rewrites `skill://` reads of dormant skills to such paths.
+ */
+export function archivedSkillFromPath(path: string, archiveDir: string): string | undefined {
+	if (!path.startsWith(`${archiveDir}/`)) return undefined;
+	const match = /^([^/@]+)(?:@[^/]+)?\/SKILL\.md(?::[\w,+:-]*)?$/.exec(path.slice(archiveDir.length + 1));
+	return match?.[1];
 }
 
 /** Emit one weak `mention` per known skill directory referenced by a shell command. */
@@ -77,7 +93,8 @@ export async function scanJsonlFiles(
 	files: string[],
 	parser: JsonlParser,
 ): Promise<ScanResult> {
-	const { db, known } = ctx;
+	const { db } = ctx;
+	const parseCtx: ParseContext = { known: ctx.known, archiveDir: ctx.paths.archiveDir };
 	let added = 0;
 	let scanned = 0;
 	for (const file of files) {
@@ -120,7 +137,7 @@ export async function scanJsonlFiles(
 				for (const line of data.subarray(0, end).toString("utf8").split("\n")) {
 					if (!parser.needles.some(needle => line.includes(needle))) continue;
 					try {
-						parser.parse(JSON.parse(line) as Record<string, unknown>, known, emit);
+						parser.parse(JSON.parse(line) as Record<string, unknown>, parseCtx, emit);
 					} catch {
 						// torn or non-JSON line
 					}

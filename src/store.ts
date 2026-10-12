@@ -11,8 +11,22 @@ export interface CuratorConfig {
 	intervalHours: number;
 	/** When false the automatic pass only labels skills; archiving stays manual. */
 	autoArchive: boolean;
-	/** Restore an archived skill when an agent tries to read it via `skill://`. */
-	autoRestoreOnRead: boolean;
+	/**
+	 * Archived skills stay loadable: `skill://` reads are redirected to the archive and
+	 * `/skill:` works. When false, archived skills are unreachable until restored.
+	 */
+	lazyLoad: boolean;
+	/** Suggest dormant skills that match the user's prompt (hidden context, no prompt cost otherwise). */
+	hints: boolean;
+	/** Minimum relevance score for a prompt hint; raise it if hints are noisy. */
+	hintMinScore: number;
+	/** Restore a dormant skill on the next pass once it was lazy-loaded this many times within `staleAfterDays` (0 disables). */
+	promoteAfterUses: number;
+	/**
+	 * Keep at most this many skills in context (0 = no cap). Past the cap, the least used
+	 * unprotected skills outside their `staleAfterDays` grace are archived by the pass.
+	 */
+	maxActive: number;
 	/** Glob patterns (`*` wildcard) of skills never archived automatically. */
 	protect: string[];
 	/** Usage sources by id (see `USAGE_SOURCES`); a missing id means enabled. */
@@ -26,7 +40,11 @@ export const DEFAULT_CONFIG: CuratorConfig = {
 	archiveAfterDays: 90,
 	intervalHours: 168,
 	autoArchive: true,
-	autoRestoreOnRead: true,
+	lazyLoad: true,
+	hints: true,
+	hintMinScore: 10,
+	promoteAfterUses: 2,
+	maxActive: 0,
 	protect: [],
 	sources: { omp: true, claude: true, opencode: true },
 	skillsCommand: "skills",
@@ -81,7 +99,9 @@ export interface LedgerEntry {
 
 export async function loadConfig(paths: Paths): Promise<CuratorConfig> {
 	const stored = await readJson<Partial<CuratorConfig>>(paths.configPath, {});
-	return { ...DEFAULT_CONFIG, ...stored, sources: { ...DEFAULT_CONFIG.sources, ...stored.sources } };
+	// Keys of retired options are dropped so they are not written back.
+	const known = Object.fromEntries(Object.entries(stored).filter(([key]) => Object.hasOwn(DEFAULT_CONFIG, key)));
+	return { ...DEFAULT_CONFIG, ...known, sources: { ...DEFAULT_CONFIG.sources, ...stored.sources } };
 }
 
 export async function loadState(paths: Paths): Promise<CuratorState> {

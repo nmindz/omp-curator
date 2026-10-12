@@ -1,6 +1,6 @@
 ---
 name: omp-curator
-description: "Use for questions about which skills are actually used, unused, stale or archived; to archive, restore, pin or prune skills; and to install, update or track skills with vercel-labs/skills (`skills add`) in OMP."
+description: "Use for questions about which skills are actually used, unused, stale or dormant (archived); to archive, restore, pin or prune skills; to find or load dormant skills; and to install, update or track skills with vercel-labs/skills (`skills add`) in OMP."
 ---
 
 # omp-curator
@@ -19,7 +19,8 @@ Report numbers from the tool, never from memory or file timestamps.
 | Most used | `omp-curator list --sort uses` |
 | Unused / idle | `omp-curator list --sort idle` or `--state stale` |
 | Due for archiving | `omp-curator list --state due` |
-| Archived | `omp-curator list --state archived` |
+| Dormant (archived) | `omp-curator list --state archived` |
+| Find a dormant skill for a task | `omp-curator search <keywords>` (or the `skill_search` tool) |
 | Evidence for one skill | `omp-curator show <skill>` |
 | Machine-readable | add `--json` to `list` |
 
@@ -29,16 +30,18 @@ Run `omp-curator scan` first when the user asks about very recent activity.
 
 ## Lifecycle changes
 
-- Archive: `omp-curator archive <skill...> --reason "<why>"`. The directory moves to `~/.omp/agent/curator/archive/`; its vercel-labs/skills lock entry is stashed so `skills update` cannot resurrect it.
-- Restore: `omp-curator restore <skill...>`. Restored skills are listed again in new OMP sessions; read `~/.omp/agent/skills/<skill>/SKILL.md` directly in the current one.
+- Archive: `omp-curator archive <skill...> --reason "<why>"`. The skill becomes dormant: the directory moves to `~/.omp/agent/curator/archive/`, it leaves the system prompt's skill list, and its vercel-labs/skills lock entry is stashed so `skills update` cannot resurrect it.
+- Restore: `omp-curator restore <skill...>`. Restored skills are listed again in new OMP sessions; in the current one `skill://<skill>` still works.
 - Pin (never auto-archive): `omp-curator pin <skill...>`; undo with `unpin`.
 - Bulk: `omp-curator prune --days N --dry-run`, then without `--dry-run` once the user agrees.
-- Policy: `omp-curator config staleAfterDays 45`, `config archiveAfterDays 120`, `config autoArchive false`.
+- Policy: `omp-curator config staleAfterDays 45`, `config archiveAfterDays 120`, `config autoArchive false`, `config maxActive 60` (cap on listed skills), `config promoteAfterUses 2`, `config hintMinScore 12` (fewer hints).
 - `purge` deletes archived copies permanently. Only run it when the user explicitly asks.
 
 Show `--dry-run` output and get the user's agreement before bulk archiving or pruning.
 
-If `skill://<name>` fails because the skill was archived, the extension restores it automatically and tells you where to read it.
+## Dormant skills
+
+Dormant skills are not in your skill list but load normally: `read skill://<name>` (including subpaths) is served from the archive, and you may receive a hidden hint naming dormant skills that match the user's request. When no listed skill fits a task, call `skill_search` before working without one. The user can invoke one with `/skill:<name>` or `/curator load <name>`. A dormant skill used repeatedly is promoted back to active by the next pass.
 
 ## Installing and updating skills (vercel-labs/skills)
 

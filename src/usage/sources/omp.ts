@@ -1,16 +1,18 @@
-import { SKILL_MD_RE, emitMentions, entryTime, listJsonl, scanJsonlFiles, skillFromUrl } from "../jsonl.ts";
+import { SKILL_MD_RE, archivedSkillFromPath, emitMentions, entryTime, listJsonl, scanJsonlFiles, skillFromUrl } from "../jsonl.ts";
 import type { JsonlParser } from "../jsonl.ts";
 import type { UsageSource } from "../types.ts";
 
 /** OMP persists `/skill:` invocations and subagent autoloads as `skill-prompt` custom messages. */
 const SKILL_PROMPT = "skill-prompt";
+/** omp-curator's own invocation message for dormant skills (`/skill:` or `/curator load`). */
+export const CURATOR_SKILL = "omp-curator-skill";
 
 export const ompParser: JsonlParser = {
-	needles: ["skill://", `"${SKILL_PROMPT}"`, "SKILL.md", "/skills/"],
-	parse(entry, known, emit) {
+	needles: ["skill://", `"${SKILL_PROMPT}"`, `"${CURATOR_SKILL}"`, "SKILL.md", "/skills/"],
+	parse(entry, { known, archiveDir }, emit) {
 		const at = entryTime(entry);
 		if (!at) return;
-		if (entry.type === "custom_message" && entry.customType === SKILL_PROMPT) {
+		if (entry.type === "custom_message" && (entry.customType === SKILL_PROMPT || entry.customType === CURATOR_SKILL)) {
 			const name = (entry.details as { name?: unknown } | undefined)?.name;
 			// Autoloads are injected hidden (`display: false`); `/skill:` invocations are displayed.
 			if (typeof name === "string") emit(name, entry.display === false ? "autoload" : "command", at);
@@ -26,8 +28,10 @@ export const ompParser: JsonlParser = {
 					const name = skillFromUrl(args.path, known);
 					if (name) emit(name, "read", at);
 				} else {
-					const name = SKILL_MD_RE.exec(args.path)?.[1];
-					if (name) emit(name, "file", at);
+					// A dormant skill lazy-loaded through the extension's `skill://` redirect.
+					const dormant = archivedSkillFromPath(args.path, archiveDir);
+					const name = dormant ?? SKILL_MD_RE.exec(args.path)?.[1];
+					if (name) emit(name, dormant ? "read" : "file", at);
 				}
 			} else if (block.name === "bash" && typeof args.command === "string") {
 				emitMentions(args.command, known, at, emit);

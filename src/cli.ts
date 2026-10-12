@@ -1,11 +1,13 @@
 import { join } from "node:path";
 import { Curator, assertSkillName } from "./curator.ts";
 import type { Assessment, CuratorOptions, RunReport, Status } from "./curator.ts";
+import { buildDormantIndex } from "./dormant.ts";
 import { writeJsonAtomic } from "./fsutil.ts";
 import { linkAgentsDir, unlinkAgentsDir } from "./integrations/vercel/link.ts";
 import { findSources, trackSkill, updateSkills } from "./integrations/vercel/remote.ts";
 import type { RemoteDeps } from "./integrations/vercel/remote.ts";
 import { brokenEntries, listSkills } from "./inventory.ts";
+import { formatSearch } from "./lazy.ts";
 import { withMutex } from "./mutex.ts";
 import { day, table } from "./render.ts";
 import { DEFAULT_CONFIG, readLedger } from "./store.ts";
@@ -55,8 +57,10 @@ Usage and lifecycle
        [--json]               K: name|uses|idle|last|tokens)
   show <skill>                usage evidence for one skill
   scan                        pull new usage evidence from session histories
-  run [--dry-run]             scan, relabel stale skills, archive due ones (autoArchive)
+  run [--dry-run]             scan, promote re-used dormant skills, relabel stale ones, archive due ones
+  search <query...>           find dormant (archived) skills by task keywords
   archive <skill...> [--reason TEXT]
+                              make skills dormant: out of the prompt, still lazy-loaded on demand
   restore <skill...>          move archived skills back (re-adds their \`skills\` lock entries)
   pin <skill...> | unpin <skill...>
   prune [--days N] [--dry-run]   archive every unprotected skill idle for N days (default archiveAfterDays)
@@ -139,7 +143,7 @@ async function cmdStatus(curator: Curator): Promise<string> {
 	return [
 		`store:      ${curator.paths.skillsDir}`,
 		`link:       ${link ? `${link.level === "ok" ? "" : "⚠ "}${link.message}` : "-"}`,
-		`skills:     ${["active", "stale", "due", "archived"].map(status => `${status} ${counts[status] ?? 0}`).join(" · ")}`,
+		`skills:     ${["active", "stale", "due", "archived"].map(status => `${status === "archived" ? "dormant (archived)" : status} ${counts[status] ?? 0}`).join(" · ")}`,
 		`last pass:  ${curator.state.lastRunAt ?? "never (run `omp-curator init`)"}${next ? ` · next automatic pass ≥ ${next}` : ""}`,
 		`policy:     stale after ${curator.config.staleAfterDays}d · archive after ${curator.config.archiveAfterDays}d · autoArchive ${curator.config.autoArchive}`,
 		`usage:      ${curator.usage.events.length} events from ${Object.keys(curator.usage.cursors).length} sources`,
@@ -345,6 +349,10 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
 				await curator.save();
 				return { code: 0, out: `${args[0]} now tracked from ${args[1]}${result.backup ? `; previous copy backed up at ${result.backup}` : ""}` };
 			});
+		case "search": {
+			requireArgs(1, "search <query...>");
+			return { code: 0, out: formatSearch(await buildDormantIndex(curator), args.join(" "), 20, true) };
+		}
 		case "sources": {
 			requireArgs(1, "sources <skill>");
 			const candidates = await findSources(args[0]!);

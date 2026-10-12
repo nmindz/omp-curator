@@ -4,8 +4,9 @@ Usage-driven skill lifecycle for [Oh My Pi](https://github.com/can1357/oh-my-pi)
 
 - **Measures real usage** from session logs: OMP `skill://` reads, `/skill:` commands and subagent `autoloadSkills`, plus Claude Code and OpenCode history. Shell commands that only touch a skill directory count as *mentions*, never as use.
 - **Lifecycle** `active → stale → archived`, with pins, protect globs, and agents' `autoloadSkills` protected automatically. Archiving is a move. Nothing is deleted unless you `purge`.
+- **Lazy loading.** Only active skills are listed in the system prompt. Archived skills become *dormant*: they cost no prompt tokens but still load on demand through `skill://`, `/skill:`, prompt hints and the `skill_search` tool. A dormant skill that gets used again is promoted back to active.
 - **One store.** `~/.omp/agent/skills` holds the only copy of every skill, and `~/.agents/skills` (the `skills` CLI canonical root) is a symlink to it. `skills add -g` installs straight into OMP, and `skills ls -g` lists every OMP skill.
-- **OMP extension.** It runs a background pass once per interval, restores an archived skill the moment an agent asks for it, and exposes `/curator`.
+- **OMP extension.** It runs a background pass once per interval, serves dormant skills, and exposes `/curator`.
 
 ## Install
 
@@ -34,7 +35,7 @@ extensions:
 | `active` | used, or available, within `staleAfterDays` |
 | `stale` | idle ≥ `staleAfterDays`; still installed |
 | `due` | idle ≥ `archiveAfterDays` and not protected; archived by the next pass when `autoArchive` is on |
-| `archived` | moved to `~/.omp/agent/curator/archive/<name>`; invisible to OMP and `skills` |
+| `archived` | *dormant*: moved to `~/.omp/agent/curator/archive/<name>`; not listed by OMP or `skills`, still lazy-loaded (see below) |
 
 Idle time runs from the **later** of the last use and the moment the skill became available. That moment is when the store entry itself appeared (for a symlink, the link, not its target), a restore, or a reinstall. A reinstall is any change of the store entry's identity: `skills add`/`update`, `track`, or an installer recreating the directory. A skill you install today is never stale, even if another harness last used it a year ago.
 
@@ -52,19 +53,40 @@ Archiving removes the skill's `skills` lock entry and stores it in the archive r
 
 Archive and restore are crash-safe. The destination and the captured lock entry are saved as a pending intent before anything moves, and the lock changes only after the move. The next pass finishes or rolls back an operation that was interrupted midway. The ledger is best effort and never blocks a state change.
 
-When an agent reads `skill://<name>` for an archived skill, the extension restores it and tells the agent where to read it in the current session. Turn this off with `omp-curator config autoRestoreOnRead false`.
+## Lazy loading
+
+OMP lists every installed skill's name and description in each session's system prompt. That is what makes a skill "active": the model sees it and can pick it. omp-curator keeps that list to the skills you actually use, and makes everything else load only when it is needed.
+
+A dormant (archived) skill is reachable in four ways:
+
+| Path | What happens |
+|---|---|
+| `read skill://<name>` | The extension redirects the read to the archived copy, including subpaths (`skill://<name>/references/x.md`) and line selectors, and tells the agent where the skill directory is. Nothing moves. |
+| Prompt hints | Before each turn, the user's prompt is matched against dormant skills' names and descriptions. Up to three matches clearing `hintMinScore` are added as hidden context naming the skill and how to load it. Each skill is hinted at most once per session; a prompt with no match adds nothing. |
+| `skill_search` tool | Agents search dormant skills by keywords when none of their listed skills fit. |
+| `/skill:<name>` or `/curator load <name> [args]` | Injects the dormant skill like OMP's own `/skill:` command. |
+
+Matching is lexical and weighted by rarity across the whole library: a word that appears in many skills ("code", "file") counts for little, a word in a skill's name counts three times. `omp-curator search <query>` shows the same ranking from the shell.
+
+Every lazy load is recorded as a use of that skill. When a dormant skill is loaded `promoteAfterUses` times within `staleAfterDays`, the next pass restores it, so it is listed again. A promoted skill gets the normal `staleAfterDays` grace before it can be archived again.
+
+`maxActive` caps the listed skills. When more than `maxActive` skills are active or stale, the pass archives the least used unprotected ones (fewest uses in `archiveAfterDays`, then oldest last use), skipping any still inside their `staleAfterDays` grace. It is off (`0`) by default.
+
+A skill restored or installed during a session is not in that session's skill list, so OMP fails to resolve its `skill://` URL. The extension then reads it straight from the store.
+
+`omp-curator config lazyLoad false` turns all of this off: dormant skills are unreachable until restored.
 
 ## Commands
 
 ```text
 status | list [--state S] [--sort K] [--json] | show <skill> | scan | run [--dry-run]
-archive <skill...> [--reason TEXT] | restore <skill...> | pin|unpin <skill...>
+search <query...> | archive <skill...> [--reason TEXT] | restore <skill...> | pin|unpin <skill...>
 prune [--days N] [--dry-run] | purge <skill...> | ledger [--limit N]
 update [skill...] [--dry-run] | track <skill> <source> | sources <skill>
 doctor [--fix] | config [key [value]] | init | link | unlink
 ```
 
-Inside OMP, run the same commands as `/curator <command>`.
+Inside OMP, run the same commands as `/curator <command>`, plus `/curator load <skill> [args]`.
 
 ## Working with `skills`
 
@@ -90,7 +112,11 @@ Inside OMP, run the same commands as `/curator <command>`.
 | `archiveAfterDays` | `90` | idle days before `due` |
 | `intervalHours` | `168` | minimum time between automatic passes |
 | `autoArchive` | `true` | archive `due` skills during passes |
-| `autoRestoreOnRead` | `true` | restore an archived skill when an agent reads it |
+| `lazyLoad` | `true` | keep dormant skills loadable on demand |
+| `hints` | `true` | add prompt hints for matching dormant skills |
+| `hintMinScore` | `10` | minimum match score for a hint (see `omp-curator search`); raise it if hints are noisy, lower it if they never fire |
+| `promoteAfterUses` | `2` | lazy loads within `staleAfterDays` that restore a dormant skill (`0` disables) |
+| `maxActive` | `0` | maximum active and stale skills; `0` means no cap |
 | `protect` | `[]` | `*` globs never archived automatically |
 | `sources` | `{"omp":true,"claude":true,"opencode":true}` | usage sources to scan |
 | `skillsCommand` | `"skills"` | `skills` CLI used by `update` and `track` |
