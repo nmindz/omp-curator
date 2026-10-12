@@ -49,6 +49,11 @@ export interface SkillRecord {
 	firstSeen: string;
 	/** Idle time is measured from max(last use, floor); set on first sight, restore and reinstall. */
 	floorAt: string;
+	/**
+	 * `seen`: when the store entry appeared; `history`: lowered to the first recorded use when
+	 * `init` adopted an existing library; `reset`: an explicit restore or reinstall.
+	 */
+	floorSource?: "seen" | "history" | "reset";
 	state: SkillState;
 	stateSince: string;
 	pinned?: boolean;

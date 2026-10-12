@@ -146,8 +146,12 @@ export class Curator {
 	 * Reconcile state with the store: record new skills, finish or roll back archives and
 	 * restores interrupted midway, notice reinstalls (also while archived) and drop records
 	 * of skills removed outside the curator.
+	 *
+	 * `adopt` (used by `init`) treats the store as a pre-existing library: a skill whose
+	 * usage history predates its store entry was migrated, not installed, so its idle time
+	 * counts from that history. Floors reset by a restore or reinstall are left alone.
 	 */
-	async sync(actor: Actor, dryRun = false): Promise<Transition[]> {
+	async sync(actor: Actor, dryRun = false, adopt = false): Promise<Transition[]> {
 		const now = this.now.toISOString();
 		const entries = new Map((await listSkills(this.paths.skillsDir)).map(entry => [entry.name, entry]));
 		const transitions: Transition[] = [];
@@ -174,6 +178,7 @@ export class Curator {
 				this.state.skills[entry.name] = {
 					firstSeen: now,
 					floorAt: entry.createdAt.toISOString(),
+					floorSource: "seen",
 					state: "active",
 					stateSince: now,
 					entryId: entry.entryId,
@@ -196,6 +201,7 @@ export class Curator {
 				record.state = "active";
 				record.stateSince = now;
 				record.floorAt = now;
+				record.floorSource = "reset";
 				delete record.archive;
 			} else if (record.entryId && record.entryId !== entry.entryId) {
 				// `skills add`/`update`, `track` and installers recreate the directory.
@@ -204,6 +210,7 @@ export class Curator {
 				record.state = "active";
 				record.stateSince = now;
 				record.floorAt = now;
+				record.floorSource = "reset";
 			}
 			record.entryId = entry.entryId;
 			if (registeredName) record.registeredName = registeredName;
@@ -221,6 +228,18 @@ export class Curator {
 				delete this.state.skills[name];
 				transitions.push({ name, from: "missing", to: "removed", detail: "removed from the store outside omp-curator" });
 				if (!dryRun) await this.ledger(actor, "forgotten", name, "store entry missing");
+			}
+		}
+		if (adopt) {
+			const usage = aggregate(this.usage.events);
+			for (const [name, record] of Object.entries(this.state.skills)) {
+				if (record.state === "archived" || record.floorSource === "reset" || record.floorSource === "history") continue;
+				const names = record.registeredName ? [name, record.registeredName] : [name];
+				const firstUsed = mergeUsage(names.map(key => usage.get(key)))?.firstUsed;
+				if (firstUsed && firstUsed < record.floorAt) {
+					record.floorAt = firstUsed;
+					record.floorSource = "history";
+				}
 			}
 		}
 		return transitions;
@@ -263,12 +282,12 @@ export class Curator {
 	 * Scan usage, reconcile the store, relabel stale skills and archive due ones. A dry run
 	 * works on a copy of the state and writes nothing.
 	 */
-	async run(actor: Actor, options: { dryRun?: boolean; allowArchive?: boolean } = {}): Promise<RunReport> {
+	async run(actor: Actor, options: { dryRun?: boolean; allowArchive?: boolean; adopt?: boolean } = {}): Promise<RunReport> {
 		const dryRun = options.dryRun ?? false;
 		const allowArchive = options.allowArchive ?? this.config.autoArchive;
 		const snapshot = dryRun ? structuredClone(this.state) : undefined;
 		const scan = await this.scan();
-		const transitions = await this.sync(actor, dryRun);
+		const transitions = await this.sync(actor, dryRun, options.adopt ?? false);
 		const now = this.now.toISOString();
 		for (const item of await this.assess()) {
 			if (item.status === "archived") continue;
@@ -343,6 +362,7 @@ export class Curator {
 		record.state = "active";
 		record.stateSince = now;
 		record.floorAt = now;
+		record.floorSource = "reset";
 		// The moved entry may have a new identity; the next sync records it without a reinstall.
 		delete record.entryId;
 		delete record.archive;

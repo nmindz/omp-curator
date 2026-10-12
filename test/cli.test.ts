@@ -38,6 +38,29 @@ describe("cli", () => {
 		expect((await cli("ledger")).out).toMatch(/archive\s+idle\s+test/);
 	});
 
+	test("init adopts history: a skill migrated into the store today but last used long ago is idle from its last use", async () => {
+		box = await sandbox();
+		await box.addSkill("migrated");
+		await box.addSkill("brand-new");
+		await box.writeJsonl(join(box.paths.claudeProjectsDir, "-p", "s.jsonl"), [
+			{ type: "assistant", timestamp: daysAgo(box.clock, 200), message: { content: [{ type: "tool_use", name: "Skill", input: { skill: "migrated" } }] } },
+		]);
+		await cli("init");
+		const items = JSON.parse((await cli("list", "--json")).out) as Array<{ name: string; status: string; idleDays: number }>;
+		expect(items.map(item => [item.name, item.status, item.idleDays])).toEqual([
+			["migrated", "due", 200],
+			["brand-new", "active", 0],
+		]);
+		// After init, a skill installed with old history elsewhere still gets the install grace.
+		await box.addSkill("installed-later");
+		await box.writeJsonl(join(box.paths.claudeProjectsDir, "-p", "t.jsonl"), [
+			{ type: "assistant", timestamp: daysAgo(box.clock, 300), message: { content: [{ type: "tool_use", name: "Skill", input: { skill: "installed-later" } }] } },
+		]);
+		await cli("run");
+		const later = JSON.parse((await cli("list", "--json")).out) as Array<{ name: string; status: string }>;
+		expect(later.find(item => item.name === "installed-later")?.status).toBe("active");
+	});
+
 	test("config validates keys and types", async () => {
 		box = await sandbox();
 		expect((await cli("config", "staleAfterDays", "45")).out).toBe("staleAfterDays = 45");

@@ -222,8 +222,9 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
 		case "init":
 			return mutate(async () => {
 				const link = await linkAgentsDir(curator.paths, dryRun);
-				// The first pass labels but never archives; the next automatic pass is one interval away.
-				const report = await curator.run("user", { dryRun, allowArchive: false });
+				// Adopt the existing library (idle from real history); label but never archive here.
+				// The next automatic pass is one interval away.
+				const report = await curator.run("user", { dryRun, allowArchive: false, adopt: true });
 				if (!dryRun) {
 					curator.state.initializedAt ??= curator.now.toISOString();
 					await curator.save();

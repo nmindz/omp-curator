@@ -36,7 +36,9 @@ extensions:
 | `due` | idle ≥ `archiveAfterDays` and not protected; archived by the next pass when `autoArchive` is on |
 | `archived` | moved to `~/.omp/agent/curator/archive/<name>`; invisible to OMP and `skills` |
 
-Idle time runs from the **later** of the last use and the moment the skill became available. That moment is when the store entry itself appeared (for a symlink, the link, not its target), a restore, or a reinstall. A reinstall is any change of the store entry's identity: `skills add`/`update`, `track`, or an installer recreating the directory. A skill you installed yesterday is never stale, even if another harness last used it a year ago.
+Idle time runs from the **later** of the last use and the moment the skill became available. That moment is when the store entry itself appeared (for a symlink, the link, not its target), a restore, or a reinstall. A reinstall is any change of the store entry's identity: `skills add`/`update`, `track`, or an installer recreating the directory. A skill you install today is never stale, even if another harness last used it a year ago.
+
+`init` is different: it adopts an existing library. A skill whose recorded usage predates its store entry was migrated, not installed, so its availability is moved back to its first recorded use, and its idle time counts from its last real use. Without this, every skill copied into the store during a migration would look freshly installed.
 
 Usage is attributed by the name OMP registers. When a skill's frontmatter `name` differs from its directory, invocations under either name count, and `skill://<frontmatter-name>` restores the right directory.
 
