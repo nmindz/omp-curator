@@ -1,0 +1,84 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { join } from "node:path";
+import { runCli } from "../src/cli.ts";
+import { exists } from "../src/fsutil.ts";
+import { openTokenizer } from "../src/tokens.ts";
+import { sandbox } from "./helpers.ts";
+import type { Sandbox } from "./helpers.ts";
+
+let box: Sandbox;
+const realFetch = globalThis.fetch;
+afterEach(async () => {
+	globalThis.fetch = realFetch;
+	await box?.cleanup();
+});
+
+/** A byte-level vocabulary (one token per byte), so counts equal UTF-8 byte lengths. */
+const BYTE_VOCAB = Array.from({ length: 256 }, (_, rank) => `${Buffer.from([rank]).toString("base64")} ${rank}`).join("\n");
+const BYTE_VOCAB_SHA = new Bun.CryptoHasher("sha256").update(BYTE_VOCAB).digest("hex");
+
+describe("tokenizer", () => {
+	test("downloads the vocabulary once, verifies it and reuses the cached copy offline", async () => {
+		box = await sandbox();
+		let downloads = 0;
+		const download = async () => (downloads++, BYTE_VOCAB);
+		const first = await openTokenizer(box.paths, { download, sha256: BYTE_VOCAB_SHA });
+		expect(first.exact).toBe(true);
+		expect(first.count("héllo")).toBe(6);
+		const second = await openTokenizer(box.paths, {
+			download: async () => {
+				throw new Error("offline");
+			},
+			sha256: BYTE_VOCAB_SHA,
+		});
+		expect(second.exact).toBe(true);
+		expect(downloads).toBe(1);
+	});
+
+	test("a vocabulary that fails its checksum is neither cached nor used", async () => {
+		box = await sandbox();
+		const tokenizer = await openTokenizer(box.paths, { download: async () => BYTE_VOCAB, sha256: "0".repeat(64) });
+		expect(tokenizer.exact).toBe(false);
+		expect(tokenizer.warning).toContain("checksum mismatch");
+		expect(tokenizer.count("hello world")).toBeGreaterThan(0);
+		expect(await exists(join(box.paths.curatorDir, "vocab", "o200k_base.tiktoken"))).toBe(false);
+	});
+});
+
+describe("list --tokenize", () => {
+	async function library(): Promise<Sandbox> {
+		const sb = await sandbox();
+		await sb.addSkill("short", { description: "Tiny.", body: "x" });
+		await sb.addSkill("long", { description: "Use for ".repeat(60), body: "word ".repeat(2000) });
+		globalThis.fetch = (async () => new Response("unavailable", { status: 503 })) as unknown as typeof fetch;
+		await (await sb.open()).run("user", { allowArchive: false });
+		return sb;
+	}
+	const cli = (...argv: string[]) => runCli(argv, { paths: box.paths, now: () => box.clock.now });
+
+	test("token bounds filter on the prompt entry, or the whole SKILL.md with --by body", async () => {
+		box = await library();
+		const names = (out: string) => out.split("\n").filter(line => /^(short|long) /.test(line)).map(line => line.split(/\s+/)[0]);
+		expect(names((await cli("list", "--min-tokens=50")).out)).toEqual(["long"]);
+		expect(names((await cli("list", "--max-tokens", "50")).out)).toEqual(["short"]);
+		expect(names((await cli("list", "--by", "body", "--min-tokens=1000")).out)).toEqual(["long"]);
+		expect((await cli("list", "--min-tokens=100000")).out).toBe("no skills match");
+	});
+
+	test("the summary totals the listed skills and flags estimates", async () => {
+		box = await library();
+		const out = (await cli("list", "--tokenize", "--sort", "tokens")).out;
+		// "aaa" precedes "long" by name, so only the token order puts "long" first.
+		await box.addSkill("aaa", { description: "A.", body: "x" });
+		const sorted = (await cli("list", "--tokenize", "--sort", "tokens")).out;
+		expect(sorted.indexOf("\nlong ")).toBeLessThan(sorted.indexOf("\naaa "));
+		expect(out).toMatch(/2 skill\(s\) · prompt \d+ tokens \(avg \d+\) · SKILL\.md \d+ tokens \(avg \d+\) · estimated/);
+		const json = JSON.parse((await cli("list", "--tokenize", "--json")).out) as Array<{ name: string; tokens: { prompt: number; body: number } }>;
+		expect(json.find(row => row.name === "long")!.tokens.body).toBeGreaterThan(json.find(row => row.name === "short")!.tokens.body);
+	});
+
+	test("invalid bounds are rejected", async () => {
+		box = await library();
+		await expect(cli("list", "--max-tokens=lots")).rejects.toThrow(/--max-tokens expects/);
+	});
+});

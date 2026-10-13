@@ -16,5 +16,8 @@
   },
   "engines": {
     "bun": ">=1.3"
+  },
+  "dependencies": {
+    "@hyvmind/tiktoken-ts": "0.1.0"
   }
 }

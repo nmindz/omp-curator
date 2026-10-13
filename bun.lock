@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "omp-curator",
+      "dependencies": {
+        "@hyvmind/tiktoken-ts": "0.1.0",
+      },
+    },
+  },
+  "packages": {
+    "@hyvmind/tiktoken-ts": ["@hyvmind/tiktoken-ts@0.1.0", "", {}, "sha512-AMV33DfIuAW/6TZRelQBCUwSRF75p9rY0AAwMbXAd28w/biMrDjzcsGkohFzGCP963tsvukavLkYGt1ugNz0pw=="],
+  }
+}

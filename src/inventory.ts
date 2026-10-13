@@ -12,8 +12,6 @@ export interface SkillEntry {
 	linkTarget?: string;
 	frontmatterName?: string;
 	description?: string;
-	/** Rough prompt cost of the description listed in every session (chars / 4). */
-	descriptionTokens: number;
 	hidden: boolean;
 	/** When this entry appeared in the store (its own creation time, not a link target's). */
 	createdAt: Date;
@@ -90,7 +88,6 @@ export async function readSkill(path: string, name: string): Promise<SkillEntry 
 		linkTarget,
 		frontmatterName,
 		description,
-		descriptionTokens: Math.ceil((description?.length ?? 0) / 4),
 		hidden: meta?.hide === true || meta?.["disable-model-invocation"] === true,
 		createdAt: new Date(link.birthtimeMs > 0 ? link.birthtimeMs : link.mtimeMs),
 		entryId: `${link.ino}:${link.birthtimeMs || link.mtimeMs}`,

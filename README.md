@@ -18,6 +18,7 @@ Requirements: [Bun](https://bun.sh) ≥ 1.3, git, and OMP. The [`skills`](https:
 
    ```sh
    git clone git@github.com:nmindz/omp-curator.git ~/Projects/omp-curator
+   cd ~/Projects/omp-curator && bun install --frozen-lockfile --ignore-scripts
    ```
 
 2. **Put the CLI on your `PATH`** and check that it runs.
@@ -95,7 +96,9 @@ Repository: git@github.com:nmindz/omp-curator.git (private; the user's `gh` or S
 1. Check prerequisites: `bun --version` (must be ≥ 1.3), `git --version`, and that
    `~/.omp/agent/` exists. If one is missing, stop and tell the user.
 2. Clone: `git clone git@github.com:nmindz/omp-curator.git ~/Projects/omp-curator`
-   (if it already exists, `git -C ~/Projects/omp-curator pull --ff-only` instead).
+   (if it already exists, `git -C ~/Projects/omp-curator pull --ff-only` instead), then
+   `cd ~/Projects/omp-curator && bun install --frozen-lockfile --ignore-scripts`
+   (one dependency, `@hyvmind/tiktoken-ts`, pinned in `bun.lock`; no install scripts run).
 3. Link the CLI:
    `mkdir -p ~/.local/bin && ln -sfn ~/Projects/omp-curator/bin/omp-curator ~/.local/bin/omp-curator`.
    Confirm `command -v omp-curator` resolves. If `~/.local/bin` is not on PATH, tell the user;
@@ -244,7 +247,9 @@ Inside OMP, run any command as `/curator <command>`, plus `/curator load <skill>
 | Command | Changes | What it does |
 |---|---|---|
 | `status` | nothing | Store, link, counts per state, last pass and next automatic pass, longest idle skills. |
-| `list [--state S] [--sort K] [--json]` | nothing | Skills with uses, last use, idle days and harnesses. `S`: `active`, `stale`, `due`, `archived`, `all`. `K`: `name`, `uses`, `idle`, `last`, `tokens`. |
+| `tokens` | nothing | Token totals and averages per state: each skill's system-prompt entry and its full SKILL.md. |
+| `list [--state S] [--sort K] [--json]` | nothing | Skills with uses, last use, idle days and harnesses. `S`: `active`, `stale`, `due`, `archived`, `all`. `K`: `name`, `uses`, `idle`, `last`, `tokens`, `state`. |
+| `list … --tokenize [--min-tokens N] [--max-tokens N] [--by prompt\|body]` | nothing | Adds `prompt tok` and `SKILL.md tok` columns and a total/average line. The bounds keep skills within a token range, on the prompt entry (default) or the whole SKILL.md with `--by body`. Bounds and `--sort tokens` imply `--tokenize`. |
 | `show <skill>` | nothing | State, origin, use counts by kind and recent evidence for one skill. |
 | `search <query...>` | nothing | Dormant skills matching task keywords, with match scores. |
 | `ledger [--limit N]` | nothing | Recent lifecycle changes. |
@@ -307,7 +312,24 @@ Inside OMP, run any command as `/curator <command>`, plus `/curator load <skill>
   ledger.jsonl   every lifecycle change (actor, action, skill, detail)
   archive/       archived skills
   backups/       copies taken before `track` replaces a skill
+  vocab/         cached o200k_base vocabulary for token counts
   conflicts/     entries parked by `init`/`link`
+```
+
+## Token counts
+
+Counts use OpenAI's `o200k_base` encoding through [`@hyvmind/tiktoken-ts`](https://github.com/hyvmind-io/tiktoken-ts). Two numbers per skill:
+
+- **prompt tok**: the `- name: description` entry OMP lists in every session's system prompt. This is what an active skill costs on every request; hidden skills and dormant ones cost 0.
+- **SKILL.md tok**: the whole file, paid only when the skill is loaded.
+
+The first count downloads the vocabulary (about 3.6 MB) from OpenAI, checks it against tiktoken's pinned SHA-256 and keeps it in `~/.omp/agent/curator/vocab/`, so later runs work offline. If it cannot be downloaded, counts fall back to the package's estimator and are marked `estimated`. Claude and other models tokenize differently, so treat the numbers as close estimates of their cost, and OMP may shorten long descriptions in the prompt.
+
+```sh
+omp-curator tokens                                         # totals per state
+omp-curator list --state active --tokenize --sort tokens   # biggest prompt entries first
+omp-curator list --state active --min-tokens=100 --max-tokens=1000
+omp-curator list --state archived --by body --min-tokens=5000
 ```
 
 ## Extending

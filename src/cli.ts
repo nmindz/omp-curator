@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Curator, assertSkillName } from "./curator.ts";
 import type { Assessment, CuratorOptions, RunReport, Status } from "./curator.ts";
@@ -6,12 +7,14 @@ import { writeJsonAtomic } from "./fsutil.ts";
 import { linkAgentsDir, unlinkAgentsDir } from "./integrations/vercel/link.ts";
 import { findSources, trackSkill, updateSkills } from "./integrations/vercel/remote.ts";
 import type { RemoteDeps } from "./integrations/vercel/remote.ts";
-import { brokenEntries, listSkills } from "./inventory.ts";
+import { brokenEntries, listSkills, readSkill } from "./inventory.ts";
 import { formatSearch } from "./lazy.ts";
 import { withMutex } from "./mutex.ts";
 import { day, table } from "./render.ts";
 import { DEFAULT_CONFIG, readLedger } from "./store.ts";
 import type { CuratorConfig } from "./store.ts";
+import { ENCODING, openTokenizer, skillTokens } from "./tokens.ts";
+import type { SkillTokens, Tokenizer } from "./tokens.ts";
 
 export interface CliResult {
 	code: number;
@@ -27,7 +30,7 @@ interface Parsed {
 	flags: Record<string, string | true>;
 }
 
-const VALUE_FLAGS = new Set(["reason", "days", "sort", "state", "limit"]);
+const VALUE_FLAGS = new Set(["reason", "days", "sort", "state", "limit", "min-tokens", "max-tokens", "by"]);
 
 function parseArgs(argv: string[]): Parsed {
 	const parsed: Parsed = { positional: [], flags: {} };
@@ -53,8 +56,13 @@ Setup
 
 Usage and lifecycle
   status                      store, link, last pass, counts per state
+  tokens                      prompt and SKILL.md token totals and averages per state
   list [--state S] [--sort K] skills with uses, last use, idle days (S: active|stale|due|archived|all;
-       [--json]               K: name|uses|idle|last|tokens)
+       [--json]               K: name|uses|idle|last|tokens|state)
+       [--tokenize]           add exact token counts (o200k_base): prompt entry and full SKILL.md
+       [--min-tokens N] [--max-tokens N] [--by prompt|body]
+                              keep skills within a token range (implies --tokenize; --by picks
+                              the count filtered and sorted on, default prompt)
   show <skill>                usage evidence for one skill
   scan                        pull new usage evidence from session histories
   run [--dry-run]             scan, promote re-used dormant skills, relabel stale ones, archive due ones
@@ -77,14 +85,17 @@ Maintenance
   config [key [value]]        show or set config (JSON values)
 `;
 
-function sortItems(items: Assessment[], key: string): Assessment[] {
+type TokenMap = Map<string, SkillTokens>;
+type TokenMeasure = keyof SkillTokens;
+
+function sortItems(items: Assessment[], key: string, tokens?: TokenMap, measure: TokenMeasure = "prompt"): Assessment[] {
 	const rank: Record<Status, number> = { due: 0, stale: 1, active: 2, archived: 3 };
 	const by: Record<string, (a: Assessment, b: Assessment) => number> = {
 		name: (a, b) => a.name.localeCompare(b.name),
 		uses: (a, b) => (b.usage?.uses ?? 0) - (a.usage?.uses ?? 0) || a.name.localeCompare(b.name),
 		idle: (a, b) => b.idleDays - a.idleDays || a.name.localeCompare(b.name),
 		last: (a, b) => (b.usage?.lastUsed ?? "").localeCompare(a.usage?.lastUsed ?? "") || a.name.localeCompare(b.name),
-		tokens: (a, b) => (b.entry?.descriptionTokens ?? 0) - (a.entry?.descriptionTokens ?? 0),
+		tokens: (a, b) => (tokens?.get(b.name)?.[measure] ?? 0) - (tokens?.get(a.name)?.[measure] ?? 0) || a.name.localeCompare(b.name),
 		state: (a, b) => rank[a.status] - rank[b.status] || b.idleDays - a.idleDays || a.name.localeCompare(b.name),
 	};
 	const compare = by[key];
@@ -92,7 +103,7 @@ function sortItems(items: Assessment[], key: string): Assessment[] {
 	return [...items].sort(compare);
 }
 
-function renderList(items: Assessment[]): string {
+function renderList(items: Assessment[], tokens?: TokenMap): string {
 	const rows = items.map(item => [
 		item.name,
 		item.status,
@@ -102,18 +113,61 @@ function renderList(items: Assessment[]): string {
 		Object.entries(item.usage?.byHarness ?? {})
 			.map(([harness, count]) => `${harness}:${count}`)
 			.join(" ") || "-",
-		String(item.entry?.descriptionTokens ?? "-"),
+		...(tokens ? [String(tokens.get(item.name)?.prompt ?? "-"), String(tokens.get(item.name)?.body ?? "-")] : []),
 		[item.protectedBy, item.origin].filter(Boolean).join("; "),
 	]);
-	return table(["skill", "state", "uses", "last used", "idle", "harnesses", "tok", "notes"], rows, [
-		"left",
-		"left",
-		"right",
-		"left",
-		"right",
-		"left",
-		"right",
-	]);
+	const header = ["skill", "state", "uses", "last used", "idle", "harnesses", ...(tokens ? ["prompt tok", "SKILL.md tok"] : []), "notes"];
+	const align: Array<"left" | "right"> = ["left", "left", "right", "left", "right", "left", ...(tokens ? (["right", "right"] as const) : [])];
+	return table(header, rows, align);
+}
+
+/** Exact token counts for each skill, read from the store or, for dormant skills, the archive. */
+async function tokenize(curator: Curator, items: Assessment[]): Promise<{ tokenizer: Tokenizer; tokens: TokenMap }> {
+	const tokenizer = await openTokenizer(curator.paths);
+	const tokens: TokenMap = new Map();
+	for (const item of items) {
+		const dir = item.entry?.path ?? item.record.archive?.path;
+		if (!dir) continue;
+		const entry = item.entry ?? (await readSkill(dir, item.name));
+		const text = await readFile(join(dir, "SKILL.md"), "utf8").catch(() => "");
+		tokens.set(item.name, skillTokens(tokenizer, entry?.frontmatterName ?? item.name, entry?.description, entry?.hidden ?? false, text));
+	}
+	return { tokenizer, tokens };
+}
+
+function sumTokens(items: Assessment[], tokens: TokenMap, measure: TokenMeasure): number {
+	return items.reduce((total, item) => total + (tokens.get(item.name)?.[measure] ?? 0), 0);
+}
+
+function tokenSummary(items: Assessment[], tokens: TokenMap, tokenizer: Tokenizer): string {
+	const avg = (total: number) => (items.length ? Math.round(total / items.length) : 0);
+	const prompt = sumTokens(items, tokens, "prompt");
+	const body = sumTokens(items, tokens, "body");
+	return [
+		`${items.length} skill(s) · prompt ${prompt} tokens (avg ${avg(prompt)}) · SKILL.md ${body} tokens (avg ${avg(body)})${tokenizer.exact ? "" : " · estimated"}`,
+		...(tokenizer.warning ? [`warn ${tokenizer.warning}`] : []),
+	].join("\n");
+}
+
+async function cmdTokens(curator: Curator): Promise<string> {
+	const items = await curator.assess();
+	const { tokenizer, tokens } = await tokenize(curator, items);
+	const states: Status[] = ["active", "stale", "due", "archived"];
+	const rows = states.map(state => {
+		const group = items.filter(item => item.status === state);
+		const prompt = sumTokens(group, tokens, "prompt");
+		const body = sumTokens(group, tokens, "body");
+		const avg = (total: number) => String(group.length ? Math.round(total / group.length) : 0);
+		return [state === "archived" ? "dormant (archived)" : state, String(group.length), String(prompt), avg(prompt), String(body), avg(body)];
+	});
+	const listed = items.filter(item => item.status !== "archived");
+	return [
+		table(["state", "skills", "prompt tok", "avg", "SKILL.md tok", "avg"], rows, ["left", "right", "right", "right", "right", "right"]),
+		"",
+		`in every session's system prompt now: ${sumTokens(listed, tokens, "prompt")} tokens (${listed.length} listed skills; dormant ones cost 0 until loaded)`,
+		`counted with ${ENCODING}${tokenizer.exact ? "" : " estimates"}; prompt tok = the skill's "- name: description" entry, SKILL.md tok = the full file loaded on use`,
+		...(tokenizer.warning ? [`warn ${tokenizer.warning}`] : []),
+	].join("\n");
 }
 
 function renderRun(report: RunReport): string {
@@ -266,17 +320,39 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
 			return mutate(async () => ({ code: 0, out: renderRun(await curator.run("user", { dryRun })) }));
 		case "status":
 			return { code: 0, out: await cmdStatus(curator) };
+		case "tokens":
+			return { code: 0, out: await cmdTokens(curator) };
 		case "list": {
 			const state = typeof flags.state === "string" ? flags.state : "all";
-			const items = sortItems(
-				(await curator.assess()).filter(item => state === "all" || item.status === state),
-				typeof flags.sort === "string" ? flags.sort : "state",
-			);
+			const sort = typeof flags.sort === "string" ? flags.sort : "state";
+			const bound = (flag: string) => {
+				const raw = flags[flag];
+				if (raw === undefined) return undefined;
+				const value = Number(raw);
+				if (typeof raw !== "string" || !Number.isFinite(value) || value < 0) throw new Error(`--${flag} expects a non-negative number`);
+				return value;
+			};
+			const min = bound("min-tokens");
+			const max = bound("max-tokens");
+			const measure = flags.by ?? "prompt";
+			if (measure !== "prompt" && measure !== "body") throw new Error(`--by expects prompt or body`);
+			let items = (await curator.assess()).filter(item => state === "all" || item.status === state);
+			// Filters and token sorting need counts, so they imply --tokenize.
+			const counted = flags.tokenize || min !== undefined || max !== undefined || sort === "tokens" ? await tokenize(curator, items) : undefined;
+			if (counted) {
+				items = items.filter(item => {
+					const value = counted.tokens.get(item.name)?.[measure] ?? 0;
+					return (min === undefined || value >= min) && (max === undefined || value <= max);
+				});
+			}
+			items = sortItems(items, sort, counted?.tokens, measure);
 			if (flags.json) {
-				const rows = items.map(({ entry, record, ...rest }) => ({ ...rest, path: record.archive?.path ?? entry?.path, tokens: entry?.descriptionTokens }));
+				const rows = items.map(({ entry, record, ...rest }) => ({ ...rest, path: record.archive?.path ?? entry?.path, ...(counted ? { tokens: counted.tokens.get(rest.name) } : {}) }));
 				return { code: 0, out: JSON.stringify(rows, null, 2) };
 			}
-			return { code: 0, out: items.length ? renderList(items) : "no skills match" };
+			if (!items.length) return { code: 0, out: "no skills match" };
+			const out = renderList(items, counted?.tokens);
+			return { code: 0, out: counted ? `${out}\n\n${tokenSummary(items, counted.tokens, counted.tokenizer)}` : out };
 		}
 		case "show":
 			requireArgs(1, "show <skill>");
