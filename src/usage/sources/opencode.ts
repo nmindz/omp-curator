@@ -21,6 +21,24 @@ async function walSize(path: string): Promise<string> {
 }
 
 /**
+ * A read-only connection cannot rebuild WAL sidecars: with a stale `-shm` and no `-wal`
+ * (left behind when OpenCode last exited), SQLite fails with "unable to open database
+ * file". Without WAL content the main file is complete, so it is read as immutable.
+ */
+function openReadonly(path: string, wal: string): Database {
+	const db = new Database(path, { readonly: true });
+	try {
+		// SQLite opens lazily; the first read is what fails.
+		db.query("select count(*) from sqlite_master").get();
+		return db;
+	} catch (error) {
+		db.close();
+		if (wal !== "0") throw error;
+		return new Database(`file:${encodeURI(path)}?immutable=1`, { readonly: true });
+	}
+}
+
+/**
  * OpenCode upserts tool parts: a call is first stored pending with empty input and later
  * updated in place, keeping `time_created`. The cursor therefore follows `time_updated`
  * (inclusive, so rows committed in the same millisecond are not lost) and events are
@@ -29,6 +47,7 @@ async function walSize(path: string): Promise<string> {
 export const opencodeSource: UsageSource = {
 	id: "opencode",
 	description: "OpenCode tool parts (opencode.db: `skill` tool calls and SKILL.md reads)",
+	locations: paths => [paths.opencodeDb],
 	async scan(ctx) {
 		const path = ctx.paths.opencodeDb;
 		const info = await stat(path).catch(() => undefined);
@@ -39,12 +58,11 @@ export const opencodeSource: UsageSource = {
 		const cursor = ctx.db.cursors[key];
 		if (cursor && cursor.size === info.size && cursor.mtimeMs === info.mtimeMs && cursor.wal === wal) return { added: 0, files: 0 };
 		let since = cursor?.offset ?? 0;
-		if (cursor && info.size < cursor.size) {
-			ctx.db.events = ctx.db.events.filter(event => !event.src.startsWith(`${key}#`));
-			since = 0;
-		}
+		// A smaller file is a new or vacuumed database: read it from the start. Events are
+		// de-duplicated by part id, and those of a purged database stay as history.
+		if (cursor && info.size < cursor.size) since = 0;
 		const seen = new Set(ctx.db.events.filter(event => event.harness === "opencode" && event.id).map(event => event.id));
-		const sqlite = new Database(path, { readonly: true });
+		const sqlite = openReadonly(path, wal);
 		let added = 0;
 		let maxUpdated = since;
 		try {

@@ -55,6 +55,7 @@ export const codexParser: JsonlParser = {
 export const codexSource: UsageSource = {
 	id: "codex",
 	description: "Codex rollouts (~/.codex/sessions and archived_sessions)",
+	locations: paths => paths.codexSessionsDirs,
 	async scan(ctx) {
 		const files = (await Promise.all(ctx.paths.codexSessionsDirs.map(listJsonl))).flat();
 		return scanJsonlFiles(ctx, "codex", files, codexParser);

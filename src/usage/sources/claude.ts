@@ -34,6 +34,7 @@ export const claudeParser: JsonlParser = {
 export const claudeSource: UsageSource = {
 	id: "claude",
 	description: "Claude Code transcripts (~/.claude/projects)",
+	locations: paths => [paths.claudeProjectsDir],
 	async scan(ctx) {
 		return scanJsonlFiles(ctx, "claude", await listJsonl(ctx.paths.claudeProjectsDir), claudeParser);
 	},

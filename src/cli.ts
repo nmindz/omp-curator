@@ -117,11 +117,15 @@ function renderList(items: Assessment[]): string {
 }
 
 function renderRun(report: RunReport): string {
+	const scan = Object.entries(report.scan);
 	const lines = [
-		`scan: ${Object.entries(report.scan)
-			.map(([id, result]) => `${id} +${result.added} events (${result.files} files)`)
+		`scan: ${scan
+			.map(([id, result]) => (result.missing ? `${id} not installed` : result.error ? `${id} unreadable` : `${id} +${result.added} events (${result.files} files)`))
 			.join(", ")}`,
 	];
+	for (const [id, result] of scan) {
+		if (result.error) lines.push(`warn ${id}: ${result.error}; its earlier usage is kept, new usage from it is not counted until it is readable`);
+	}
 	const fresh = report.transitions.filter(t => t.from === "new");
 	const changes = report.transitions.filter(t => t.from !== "new");
 	if (fresh.length) lines.push(`${report.dryRun ? "would track" : "tracking"} ${fresh.length} newly seen skill(s)`);

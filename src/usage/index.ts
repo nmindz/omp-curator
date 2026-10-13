@@ -1,3 +1,4 @@
+import { access } from "node:fs/promises";
 import { claudeSource } from "./sources/claude.ts";
 import { codexSource } from "./sources/codex.ts";
 import { dshSource } from "./sources/dsh.ts";
@@ -8,7 +9,14 @@ import type { ScanContext, ScanResult, UsageSource } from "./types.ts";
 /** Built-in sources. Add a harness by implementing {@link UsageSource} and listing it here. */
 export const USAGE_SOURCES: readonly UsageSource[] = [ompSource, claudeSource, opencodeSource, codexSource, dshSource];
 
-/** Scan every source not disabled in `enabled` (a missing key means enabled). */
+/**
+ * Scan every source not disabled in `enabled` (a missing key means enabled).
+ *
+ * Harnesses come and go: a source whose locations are all gone is reported `missing`, and
+ * one that cannot be read reports `error`. Either way the evidence already recorded from
+ * it stays, so an uninstalled harness keeps its history. Only a required source (OMP)
+ * aborts the scan when it fails.
+ */
 export async function scanUsage(
 	ctx: ScanContext,
 	enabled: Record<string, boolean>,
@@ -17,25 +25,28 @@ export async function scanUsage(
 	const results: Record<string, ScanResult> = {};
 	for (const source of sources) {
 		if (enabled[source.id] === false) continue;
-		results[source.id] = await scanWithRetry(source, ctx);
+		const present = await Promise.all(source.locations(ctx.paths).map(path => access(path).then(() => true, () => false)));
+		if (!present.some(Boolean)) {
+			results[source.id] = { added: 0, files: 0, missing: true };
+			continue;
+		}
+		try {
+			results[source.id] = await scanWithRetry(source, ctx);
+		} catch (error) {
+			const message = (error as Error).message;
+			if (source.required) throw new Error(`usage source "${source.id}" failed: ${message}`);
+			results[source.id] = { added: 0, files: 0, error: message };
+		}
 	}
 	return results;
 }
 
-/**
- * A harness may hold its database mid-checkpoint for a moment ("unable to open database
- * file"), so retry briefly. A source that still fails aborts the scan: a pass with missing
- * evidence could archive skills that were in fact used.
- */
-async function scanWithRetry(source: UsageSource, ctx: ScanContext, attempts = 3): Promise<ScanResult> {
-	for (let attempt = 1; ; attempt++) {
-		try {
-			return await source.scan(ctx);
-		} catch (error) {
-			if (attempt >= attempts) {
-				throw new Error(`usage source "${source.id}" failed: ${(error as Error).message} (skip it with \`omp-curator config sources '{"${source.id}":false}'\`)`);
-			}
-			await Bun.sleep(500 * attempt);
-		}
+async function scanWithRetry(source: UsageSource, ctx: ScanContext): Promise<ScanResult> {
+	try {
+		return await source.scan(ctx);
+	} catch {
+		// One retry for a file caught mid-write.
+		await Bun.sleep(500);
+		return source.scan(ctx);
 	}
 }

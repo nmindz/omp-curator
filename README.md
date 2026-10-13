@@ -187,6 +187,8 @@ Each event is attributed to a skill by name, so a skill counts wherever it was u
 
 Rankings come straight from this evidence: `omp-curator list --sort uses` (or `idle`, `last`, `tokens`), and `omp-curator show <skill>` for the events behind one skill. The pass ranks skills over `maxActive` the same way: fewest uses in `archiveAfterDays` first, then oldest last use.
 
+Harnesses come and go. A harness whose history is gone (never installed, or uninstalled and purged) shows as `not installed` in the scan line; one whose history cannot be read shows as `unreadable` with a warning. In both cases the usage already recorded from it stays, so uninstalling a harness never makes its skills look unused, and a reinstalled harness adds to the old history. Only OMP's own history is required: if it cannot be read, the scan stops before anything is relabelled or archived.
+
 ## Lifecycle
 
 | State | Meaning |

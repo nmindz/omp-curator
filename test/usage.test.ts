@@ -1,10 +1,10 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { aggregate } from "../src/usage/db.ts";
 import { scanUsage } from "../src/usage/index.ts";
-import type { UsageDb } from "../src/usage/types.ts";
+import type { UsageDb, UsageSource } from "../src/usage/types.ts";
 import { ompToolCall, sandbox } from "./helpers.ts";
 import type { Sandbox } from "./helpers.ts";
 
@@ -227,6 +227,78 @@ describe("OpenCode database", () => {
 		} finally {
 			writer.close();
 		}
+	});
+
+	test("a stale -shm without -wal (left by an exited OpenCode) still reads", async () => {
+		box = await sandbox();
+		await mkdir(dirname(box.paths.opencodeDb), { recursive: true });
+		const sqlite = createDb(box.paths.opencodeDb);
+		const insert = sqlite.prepare("insert into part values (?, ?, ?, ?, ?)");
+		insert.run("a", "s1", 1_000, 1_000, part("skill", { name: "jj" }));
+		insert.finalize();
+		sqlite.close();
+		await rm(`${box.paths.opencodeDb}-wal`, { force: true });
+		await writeFile(`${box.paths.opencodeDb}-shm`, Buffer.alloc(32_768));
+		const db = emptyDb();
+		expect((await scanUsage({ paths: box.paths, db, known: KNOWN }, { omp: false, claude: false })).opencode).toEqual({ added: 1, files: 1 });
+	});
+
+	test("a purged and reinstalled database keeps the old history and adds the new", async () => {
+		box = await sandbox();
+		await mkdir(dirname(box.paths.opencodeDb), { recursive: true });
+		const fill = (rows: Array<[string, string]>, pad = 0) => {
+			const sqlite = createDb(box.paths.opencodeDb);
+			const insert = sqlite.prepare("insert into part values (?, ?, ?, ?, ?)");
+			rows.forEach(([id, skill], i) => insert.run(id, "s", 1_000 + i, 1_000 + i, part("skill", { name: skill })));
+			// The first database is larger, so the reinstalled one reads as a reset.
+			if (pad) sqlite.run(`create table pad as select '${"x".repeat(pad)}' as x`);
+			insert.finalize();
+			sqlite.close();
+		};
+		fill([["a", "jj"], ["b", "herdr"]], 200_000);
+		const db = emptyDb();
+		const ctx = { paths: box.paths, db, known: KNOWN };
+		const only = { omp: false, claude: false };
+		await scanUsage(ctx, only);
+		await rm(dirname(box.paths.opencodeDb), { recursive: true });
+		expect((await scanUsage(ctx, only)).opencode).toEqual({ added: 0, files: 0, missing: true });
+		await mkdir(dirname(box.paths.opencodeDb), { recursive: true });
+		fill([["z", "build"]]);
+		await scanUsage(ctx, only);
+		expect(db.events.map(event => event.skill)).toEqual(["jj", "herdr", "build"]);
+	});
+});
+
+describe("harness availability", () => {
+	test("an uninstalled harness is reported missing and its recorded usage stays", async () => {
+		box = await sandbox();
+		await box.writeJsonl(join(box.paths.claudeProjectsDir, "-p", "s.jsonl"), [
+			{ type: "assistant", timestamp: "2026-08-01T00:00:00Z", message: { content: [{ type: "tool_use", name: "Skill", input: { skill: "jj" } }] } },
+		]);
+		const db = emptyDb();
+		const ctx = { paths: box.paths, db, known: KNOWN };
+		const only = { omp: false, opencode: false, codex: false, dsh: false };
+		await scanUsage(ctx, only);
+		await rm(dirname(box.paths.claudeProjectsDir), { recursive: true });
+		expect((await scanUsage(ctx, only)).claude).toEqual({ added: 0, files: 0, missing: true });
+		expect(db.events.map(event => event.skill)).toEqual(["jj"]);
+	});
+
+	test("an unreadable optional source warns and the others still scan; a required one aborts", async () => {
+		box = await sandbox();
+		const ok: UsageSource = { id: "ok", description: "", locations: paths => [paths.skillsDir], scan: async () => ({ added: 1, files: 1 }) };
+		const broken = (required: boolean): UsageSource => ({
+			id: "broken",
+			description: "",
+			required,
+			locations: paths => [paths.skillsDir],
+			scan: async () => {
+				throw new Error("disk on fire");
+			},
+		});
+		const ctx = { paths: box.paths, db: emptyDb(), known: KNOWN };
+		expect(await scanUsage(ctx, {}, [broken(false), ok])).toEqual({ broken: { added: 0, files: 0, error: "disk on fire" }, ok: { added: 1, files: 1 } });
+		await expect(scanUsage(ctx, {}, [broken(true), ok])).rejects.toThrow(/usage source "broken" failed: disk on fire/);
 	});
 });
 

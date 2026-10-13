@@ -43,6 +43,9 @@ export const ompParser: JsonlParser = {
 export const ompSource: UsageSource = {
 	id: "omp",
 	description: "OMP sessions, including subagent transcripts (~/.omp/agent/sessions)",
+	locations: paths => [paths.sessionsDir],
+	// OMP is the host harness: unreadable OMP history is a real failure, not an uninstall.
+	required: true,
 	async scan(ctx) {
 		return scanJsonlFiles(ctx, "omp", await listJsonl(ctx.paths.sessionsDir), ompParser);
 	},

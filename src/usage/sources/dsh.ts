@@ -35,6 +35,7 @@ export const dshParser: JsonlParser = {
 export const dshSource: UsageSource = {
 	id: "dsh",
 	description: "DeepSeek Harness sessions (~/.dsh/sessions, zstd-compressed)",
+	locations: paths => [paths.dshSessionsDir],
 	async scan(ctx) {
 		return scanZstdJsonlFiles(ctx, "dsh", await listFiles(ctx.paths.dshSessionsDir, ".jsonl.zstd"), dshParser);
 	},

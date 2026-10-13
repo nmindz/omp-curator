@@ -44,6 +44,10 @@ export interface UsageDb {
 export interface ScanResult {
 	added: number;
 	files: number;
+	/** Nothing of the harness is on disk (never installed, or uninstalled and purged). */
+	missing?: boolean;
+	/** The source could not be read; its earlier evidence is kept. */
+	error?: string;
 }
 
 export interface ScanContext {
@@ -60,5 +64,12 @@ export interface ScanContext {
 export interface UsageSource {
 	id: string;
 	description: string;
+	/** Where the harness keeps its history; the source counts as missing when none exists. */
+	locations(paths: Paths): string[];
+	/**
+	 * A required source that fails aborts the scan. Optional ones (other harnesses, which
+	 * may be uninstalled at any time) only warn, and their recorded evidence stays.
+	 */
+	required?: boolean;
 	scan(ctx: ScanContext): Promise<ScanResult>;
 }
