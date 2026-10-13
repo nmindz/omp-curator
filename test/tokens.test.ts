@@ -67,11 +67,16 @@ describe("list --tokenize", () => {
 
 	test("the summary totals the listed skills and flags estimates", async () => {
 		box = await library();
-		const out = (await cli("list", "--tokenize", "--sort", "tokens")).out;
+		const out = (await cli("list", "--tokenize")).out;
 		// "aaa" precedes "long" by name, so only the token order puts "long" first.
 		await box.addSkill("aaa", { description: "A.", body: "x" });
-		const sorted = (await cli("list", "--tokenize", "--sort", "tokens")).out;
+		await (await box.open()).run("user", { allowArchive: false });
+		const sorted = (await cli("list", "--sort", "prompt-tok")).out;
 		expect(sorted.indexOf("\nlong ")).toBeLessThan(sorted.indexOf("\naaa "));
+		// --asc reverses the default (largest first) direction; --sort on a token column implies --tokenize.
+		const ascending = (await cli("list", "--sort", "skillmd-tok", "--asc")).out;
+		expect(ascending.indexOf("\nlong ")).toBeGreaterThan(ascending.indexOf("\naaa "));
+		expect(ascending).toContain("SKILL.md tok");
 		expect(out).toMatch(/2 skill\(s\) · prompt \d+ tokens \(avg \d+\) · SKILL\.md \d+ tokens \(avg \d+\) · estimated/);
 		const json = JSON.parse((await cli("list", "--tokenize", "--json")).out) as Array<{ name: string; tokens: { prompt: number; body: number } }>;
 		expect(json.find(row => row.name === "long")!.tokens.body).toBeGreaterThan(json.find(row => row.name === "short")!.tokens.body);

@@ -31,6 +31,10 @@ describe("cli", () => {
 			["used", "active", 1],
 			["idle", "due", 0],
 		]);
+		const ascending = JSON.parse((await cli("list", "--json", "--sort", "uses", "--asc")).out) as Array<{ name: string }>;
+		expect(ascending.map(item => item.name)).toEqual(["idle", "used"]);
+		await expect(cli("list", "--sort", "tokens")).rejects.toThrow(/unknown sort key "tokens" \(skill\|state\|uses\|last-used/);
+		await expect(cli("list", "--asc", "--desc")).rejects.toThrow(/either --asc or --desc/);
 
 		expect((await cli("archive", "idle", "--reason", "test")).out).toContain("archived idle");
 		expect((await cli("list", "--state", "archived")).out).toContain("idle");

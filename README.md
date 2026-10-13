@@ -188,7 +188,7 @@ The OMP extension also runs a pass once per `intervalHours` (weekly). With `auto
 
 Each event is attributed to a skill by name, so a skill counts wherever it was used, even if another harness kept its own copy. Many SKILL.md reads in one session within minutes are a bulk scan, not a use, and are discounted. Scans are incremental: cursors remember how far each file or database was read, and a rewritten file is re-read from the start. `omp-curator scan` pulls new evidence on demand; every pass does it too.
 
-Rankings come straight from this evidence: `omp-curator list --sort uses` (or `idle`, `last`, `tokens`), and `omp-curator show <skill>` for the events behind one skill. The pass ranks skills over `maxActive` the same way: fewest uses in `archiveAfterDays` first, then oldest last use.
+Rankings come straight from this evidence: `omp-curator list --sort uses` (or any other column, see [List columns](#list-columns)), and `omp-curator show <skill>` for the events behind one skill. The pass ranks skills over `maxActive` the same way: fewest uses in `archiveAfterDays` first, then oldest last use.
 
 Harnesses come and go. A harness whose history is gone (never installed, or uninstalled and purged) shows as `not installed` in the scan line; one whose history cannot be read shows as `unreadable` with a warning. In both cases the usage already recorded from it stays, so uninstalling a harness never makes its skills look unused, and a reinstalled harness adds to the old history. Only OMP's own history is required: if it cannot be read, the scan stops before anything is relabelled or archived.
 
@@ -248,8 +248,8 @@ Inside OMP, run any command as `/curator <command>`, plus `/curator load <skill>
 |---|---|---|
 | `status` | nothing | Store, link, counts per state, last pass and next automatic pass, longest idle skills. |
 | `tokens` | nothing | Token totals and averages per state: each skill's system-prompt entry and its full SKILL.md. |
-| `list [--state S] [--sort K] [--json]` | nothing | Skills with uses, last use, idle days and harnesses. `S`: `active`, `stale`, `due`, `archived`, `all`. `K`: `name`, `uses`, `idle`, `last`, `tokens`, `state`. |
-| `list … --tokenize [--min-tokens N] [--max-tokens N] [--by prompt\|body]` | nothing | Adds `prompt tok` and `SKILL.md tok` columns and a total/average line. The bounds keep skills within a token range, on the prompt entry (default) or the whole SKILL.md with `--by body`. Bounds and `--sort tokens` imply `--tokenize`. |
+| `list [--state S] [--sort COLUMN] [--asc\|--desc] [--json]` | nothing | Skills with uses, last use, idle days and harnesses. `S`: `active`, `stale`, `due`, `archived`, `all`. `--sort` takes any [column key](#list-columns); `--asc`/`--desc` override its default direction. |
+| `list … --tokenize [--min-tokens N] [--max-tokens N] [--by prompt\|body]` | nothing | Adds `prompt tok` and `SKILL.md tok` columns and a total/average line. The bounds keep skills within a token range, on the prompt entry (default) or the whole SKILL.md with `--by body`. Bounds and sorting by a token column imply `--tokenize`. |
 | `show <skill>` | nothing | State, origin, use counts by kind and recent evidence for one skill. |
 | `search <query...>` | nothing | Dormant skills matching task keywords, with match scores. |
 | `ledger [--limit N]` | nothing | Recent lifecycle changes. |
@@ -266,6 +266,24 @@ Inside OMP, run any command as `/curator <command>`, plus `/curator load <skill>
 | `doctor [--fix]` | nothing / links | Link state, stray `skills` links in other harnesses, lock drift, invalid SKILL.md files. `--fix` removes stray links. |
 | `config [key [value]]` | config | Shows or sets one option; values are JSON. |
 | `init [--dry-run]` / `link` / `unlink` | store, state | First-time setup / the `~/.agents/skills` link alone. |
+
+### List columns
+
+`--sort` takes the key of any `list` column. Ties are broken by skill name. Without `--asc` or `--desc`, each column uses the direction that puts the most telling skills first.
+
+| Column | `--sort` key | Default | `--json` field | Meaning |
+|---|---|---|---|---|
+| `skill` | `skill` | asc | `name` | Store directory name |
+| `state` | `state` | asc (`due`, `stale`, `active`, `archived`; longest idle first within each) | `status` | Lifecycle state |
+| `uses` | `uses` | desc | `usage.uses` | Recorded uses, all harnesses |
+| `last used` | `last-used` | desc (most recent first) | `usage.lastUsed` | Time of the last use |
+| `idle` | `idle` | desc | `idleDays` (from `idleSince`) | Days since the later of the last use and the skill becoming available |
+| `harnesses` | `harnesses` | asc (alphabetical by text) | `usage.byHarness` | Uses per harness the history came from; not where the skill is installed |
+| `prompt tok` | `prompt-tok` | desc | `tokens.prompt` | Tokens of the skill's entry in every system prompt (with `--tokenize`) |
+| `SKILL.md tok` | `skillmd-tok` | desc | `tokens.body` | Tokens of the whole SKILL.md (with `--tokenize`) |
+| `notes` | `notes` | asc | `protectedBy`, `origin` | Why it is protected from archiving, and where it was installed from |
+
+`--json` also includes `usage.byKind` (uses per evidence kind: `read`, `file`, `command`, `autoload`, `skill-tool`), `usage.mentions`, `usage.firstUsed`, `usage.lastMention`, `pinned` and `path` (the store or archive directory). The default sort is `state`.
 
 ## Working with `skills`
 
@@ -327,7 +345,8 @@ The first count downloads the vocabulary (about 3.6 MB) from OpenAI, checks it a
 
 ```sh
 omp-curator tokens                                         # totals per state
-omp-curator list --state active --tokenize --sort tokens   # biggest prompt entries first
+omp-curator list --state active --sort prompt-tok          # biggest prompt entries first
+omp-curator list --state active --sort skillmd-tok --asc   # smallest SKILL.md files first
 omp-curator list --state active --min-tokens=100 --max-tokens=1000
 omp-curator list --state archived --by body --min-tokens=5000
 ```

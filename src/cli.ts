@@ -57,12 +57,13 @@ Setup
 Usage and lifecycle
   status                      store, link, last pass, counts per state
   tokens                      prompt and SKILL.md token totals and averages per state
-  list [--state S] [--sort K] skills with uses, last use, idle days (S: active|stale|due|archived|all;
-       [--json]               K: name|uses|idle|last|tokens|state)
+  list [--state S] [--json]   skills with uses, last use, idle days (S: active|stale|due|archived|all)
+       [--sort COLUMN]        sort by a column: skill|state|uses|last-used|idle|harnesses|prompt-tok|
+       [--asc | --desc]       skillmd-tok|notes (default state; each has a natural direction)
        [--tokenize]           add exact token counts (o200k_base): prompt entry and full SKILL.md
        [--min-tokens N] [--max-tokens N] [--by prompt|body]
                               keep skills within a token range (implies --tokenize; --by picks
-                              the count filtered and sorted on, default prompt)
+                              the count filtered on, default prompt)
   show <skill>                usage evidence for one skill
   scan                        pull new usage evidence from session histories
   run [--dry-run]             scan, promote re-used dormant skills, relabel stale ones, archive due ones
@@ -86,39 +87,91 @@ Maintenance
 `;
 
 type TokenMap = Map<string, SkillTokens>;
-type TokenMeasure = keyof SkillTokens;
 
-function sortItems(items: Assessment[], key: string, tokens?: TokenMap, measure: TokenMeasure = "prompt"): Assessment[] {
-	const rank: Record<Status, number> = { due: 0, stale: 1, active: 2, archived: 3 };
-	const by: Record<string, (a: Assessment, b: Assessment) => number> = {
-		name: (a, b) => a.name.localeCompare(b.name),
-		uses: (a, b) => (b.usage?.uses ?? 0) - (a.usage?.uses ?? 0) || a.name.localeCompare(b.name),
-		idle: (a, b) => b.idleDays - a.idleDays || a.name.localeCompare(b.name),
-		last: (a, b) => (b.usage?.lastUsed ?? "").localeCompare(a.usage?.lastUsed ?? "") || a.name.localeCompare(b.name),
-		tokens: (a, b) => (tokens?.get(b.name)?.[measure] ?? 0) - (tokens?.get(a.name)?.[measure] ?? 0) || a.name.localeCompare(b.name),
-		state: (a, b) => rank[a.status] - rank[b.status] || b.idleDays - a.idleDays || a.name.localeCompare(b.name),
-	};
-	const compare = by[key];
-	if (!compare) throw new Error(`unknown sort key "${key}" (name|uses|idle|last|tokens|state)`);
-	return [...items].sort(compare);
+const harnessText = (item: Assessment): string =>
+	Object.entries(item.usage?.byHarness ?? {})
+		.map(([harness, count]) => `${harness}:${count}`)
+		.join(" ") || "-";
+const notesText = (item: Assessment): string => [item.protectedBy, item.origin].filter(Boolean).join("; ");
+
+interface Column {
+	/** `--sort` key. */
+	key: string;
+	header: string;
+	align: "left" | "right";
+	/** Needs token counts (`--tokenize`). */
+	tokens?: boolean;
+	cell(item: Assessment, tokens?: TokenMap): string;
+	/** Ascending order; ties fall back to the skill name. */
+	compare(a: Assessment, b: Assessment, tokens?: TokenMap): number;
+	/** Direction used without `--asc`/`--desc`: the most telling end first. */
+	desc: boolean;
+}
+
+const STATE_RANK: Record<Status, number> = { due: 0, stale: 1, active: 2, archived: 3 };
+const tokenValue = (tokens: TokenMap | undefined, item: Assessment, measure: keyof SkillTokens) => tokens?.get(item.name)?.[measure] ?? 0;
+
+export const LIST_COLUMNS: readonly Column[] = [
+	{ key: "skill", header: "skill", align: "left", desc: false, cell: item => item.name, compare: (a, b) => a.name.localeCompare(b.name) },
+	{
+		key: "state",
+		header: "state",
+		align: "left",
+		desc: false,
+		cell: item => item.status,
+		// Within a state, the longest idle first.
+		compare: (a, b) => STATE_RANK[a.status] - STATE_RANK[b.status] || b.idleDays - a.idleDays,
+	},
+	{ key: "uses", header: "uses", align: "right", desc: true, cell: item => String(item.usage?.uses ?? 0), compare: (a, b) => (a.usage?.uses ?? 0) - (b.usage?.uses ?? 0) },
+	{
+		key: "last-used",
+		header: "last used",
+		align: "left",
+		desc: true,
+		cell: item => day(item.usage?.lastUsed),
+		compare: (a, b) => (a.usage?.lastUsed ?? "").localeCompare(b.usage?.lastUsed ?? ""),
+	},
+	{ key: "idle", header: "idle", align: "right", desc: true, cell: item => String(item.idleDays), compare: (a, b) => a.idleDays - b.idleDays },
+	{ key: "harnesses", header: "harnesses", align: "left", desc: false, cell: harnessText, compare: (a, b) => harnessText(a).localeCompare(harnessText(b)) },
+	{
+		key: "prompt-tok",
+		header: "prompt tok",
+		align: "right",
+		desc: true,
+		tokens: true,
+		cell: (item, tokens) => String(tokens?.get(item.name)?.prompt ?? "-"),
+		compare: (a, b, tokens) => tokenValue(tokens, a, "prompt") - tokenValue(tokens, b, "prompt"),
+	},
+	{
+		key: "skillmd-tok",
+		header: "SKILL.md tok",
+		align: "right",
+		desc: true,
+		tokens: true,
+		cell: (item, tokens) => String(tokens?.get(item.name)?.body ?? "-"),
+		compare: (a, b, tokens) => tokenValue(tokens, a, "body") - tokenValue(tokens, b, "body"),
+	},
+	{ key: "notes", header: "notes", align: "left", desc: false, cell: notesText, compare: (a, b) => notesText(a).localeCompare(notesText(b)) },
+];
+
+function sortColumn(key: string): Column {
+	const column = LIST_COLUMNS.find(candidate => candidate.key === key);
+	if (!column) throw new Error(`unknown sort key "${key}" (${LIST_COLUMNS.map(candidate => candidate.key).join("|")})`);
+	return column;
+}
+
+function sortItems(items: Assessment[], column: Column, descending: boolean, tokens?: TokenMap): Assessment[] {
+	const sign = descending ? -1 : 1;
+	return [...items].sort((a, b) => sign * column.compare(a, b, tokens) || a.name.localeCompare(b.name));
 }
 
 function renderList(items: Assessment[], tokens?: TokenMap): string {
-	const rows = items.map(item => [
-		item.name,
-		item.status,
-		String(item.usage?.uses ?? 0),
-		day(item.usage?.lastUsed),
-		String(item.idleDays),
-		Object.entries(item.usage?.byHarness ?? {})
-			.map(([harness, count]) => `${harness}:${count}`)
-			.join(" ") || "-",
-		...(tokens ? [String(tokens.get(item.name)?.prompt ?? "-"), String(tokens.get(item.name)?.body ?? "-")] : []),
-		[item.protectedBy, item.origin].filter(Boolean).join("; "),
-	]);
-	const header = ["skill", "state", "uses", "last used", "idle", "harnesses", ...(tokens ? ["prompt tok", "SKILL.md tok"] : []), "notes"];
-	const align: Array<"left" | "right"> = ["left", "left", "right", "left", "right", "left", ...(tokens ? (["right", "right"] as const) : [])];
-	return table(header, rows, align);
+	const columns = LIST_COLUMNS.filter(column => !column.tokens || tokens);
+	return table(
+		columns.map(column => column.header),
+		items.map(item => columns.map(column => column.cell(item, tokens))),
+		columns.map(column => column.align),
+	);
 }
 
 /** Exact token counts for each skill, read from the store or, for dormant skills, the archive. */
@@ -324,7 +377,9 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
 			return { code: 0, out: await cmdTokens(curator) };
 		case "list": {
 			const state = typeof flags.state === "string" ? flags.state : "all";
-			const sort = typeof flags.sort === "string" ? flags.sort : "state";
+			const column = sortColumn(typeof flags.sort === "string" ? flags.sort : "state");
+			if (flags.asc && flags.desc) throw new Error("use either --asc or --desc");
+			const descending = flags.asc ? false : flags.desc ? true : column.desc;
 			const bound = (flag: string) => {
 				const raw = flags[flag];
 				if (raw === undefined) return undefined;
@@ -337,15 +392,15 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
 			const measure = flags.by ?? "prompt";
 			if (measure !== "prompt" && measure !== "body") throw new Error(`--by expects prompt or body`);
 			let items = (await curator.assess()).filter(item => state === "all" || item.status === state);
-			// Filters and token sorting need counts, so they imply --tokenize.
-			const counted = flags.tokenize || min !== undefined || max !== undefined || sort === "tokens" ? await tokenize(curator, items) : undefined;
+			// Token filters and token columns need counts, so they imply --tokenize.
+			const counted = flags.tokenize || min !== undefined || max !== undefined || column.tokens ? await tokenize(curator, items) : undefined;
 			if (counted) {
 				items = items.filter(item => {
 					const value = counted.tokens.get(item.name)?.[measure] ?? 0;
 					return (min === undefined || value >= min) && (max === undefined || value <= max);
 				});
 			}
-			items = sortItems(items, sort, counted?.tokens, measure);
+			items = sortItems(items, column, descending, counted?.tokens);
 			if (flags.json) {
 				const rows = items.map(({ entry, record, ...rest }) => ({ ...rest, path: record.archive?.path ?? entry?.path, ...(counted ? { tokens: counted.tokens.get(rest.name) } : {}) }));
 				return { code: 0, out: JSON.stringify(rows, null, 2) };
