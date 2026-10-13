@@ -107,10 +107,14 @@ export async function autoloadReferences(paths: Paths): Promise<Map<string, stri
 	for (const file of files) {
 		if (!file.endsWith(".md")) continue;
 		const meta = parseFrontmatter(await readFile(join(paths.agentDefsDir, file), "utf8"));
-		const raw = meta?.autoloadSkills ?? meta?.["autoload-skills"];
-		// OMP accepts a YAML list or a comma-separated string (parseArrayOrCSV).
-		const skills = typeof raw === "string" ? raw.split(",") : Array.isArray(raw) ? raw : [];
-		for (const skill of skills.map(item => item.trim()).filter(Boolean)) refs.set(skill, [...(refs.get(skill) ?? []), file.slice(0, -3)]);
+		for (const skill of autoloadList(meta)) refs.set(skill, [...(refs.get(skill) ?? []), file.slice(0, -3)]);
 	}
 	return refs;
+}
+
+/** An agent's `autoloadSkills`: OMP accepts a YAML list or a comma-separated string (parseArrayOrCSV). */
+export function autoloadList(meta: Record<string, unknown> | undefined): string[] {
+	const raw = meta?.autoloadSkills ?? meta?.["autoload-skills"];
+	const skills = typeof raw === "string" ? raw.split(",") : Array.isArray(raw) ? raw : [];
+	return skills.map(item => String(item).trim()).filter(Boolean);
 }

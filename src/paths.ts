@@ -12,6 +12,8 @@ export interface Paths {
 	sessionsDir: string;
 	curatorDir: string;
 	archiveDir: string;
+	/** Archived agent definitions (`<name>.md`), apart from skill directories. */
+	agentArchiveDir: string;
 	backupDir: string;
 	conflictsDir: string;
 	configPath: string;
@@ -44,6 +46,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
 		sessionsDir: join(agentDir, "sessions"),
 		curatorDir,
 		archiveDir: join(curatorDir, "archive"),
+		agentArchiveDir: join(curatorDir, "archive-agents"),
 		backupDir: join(curatorDir, "backups"),
 		conflictsDir: join(curatorDir, "conflicts"),
 		configPath: join(curatorDir, "config.json"),

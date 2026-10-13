@@ -35,10 +35,22 @@ export interface Cursor {
 	wal?: string;
 }
 
+/** A subagent spawned from an agent definition (OMP `task`, Claude Code `Task`/`Agent`). */
+export interface AgentSpawn {
+	agent: string;
+	at: string;
+	harness: string;
+	/** Cursor key of the file the spawn came from; a rewritten file replaces its spawns. */
+	src: string;
+}
+
 export interface UsageDb {
 	version: number;
 	cursors: Record<string, Cursor>;
 	events: UsageEvent[];
+	spawns?: AgentSpawn[];
+	/** Set once spawns were backfilled from history scanned before spawns were recorded. */
+	spawnsBackfilled?: boolean;
 }
 
 export interface ScanResult {
@@ -72,4 +84,6 @@ export interface UsageSource {
 	 */
 	required?: boolean;
 	scan(ctx: ScanContext): Promise<ScanResult>;
+	/** Record agent spawns from history already scanned before spawns were tracked. */
+	backfillSpawns?(ctx: ScanContext): Promise<void>;
 }

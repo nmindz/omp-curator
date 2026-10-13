@@ -23,6 +23,7 @@ export async function scanUsage(
 	sources: readonly UsageSource[] = USAGE_SOURCES,
 ): Promise<Record<string, ScanResult>> {
 	const results: Record<string, ScanResult> = {};
+	const backfill = !ctx.db.spawnsBackfilled;
 	for (const source of sources) {
 		if (enabled[source.id] === false) continue;
 		const present = await Promise.all(source.locations(ctx.paths).map(path => access(path).then(() => true, () => false)));
@@ -31,6 +32,8 @@ export async function scanUsage(
 			continue;
 		}
 		try {
+			// Before the regular scan, which then reads only what is past each cursor.
+			if (backfill) await source.backfillSpawns?.(ctx);
 			results[source.id] = await scanWithRetry(source, ctx);
 		} catch (error) {
 			const message = (error as Error).message;
@@ -38,6 +41,7 @@ export async function scanUsage(
 			results[source.id] = { added: 0, files: 0, error: message };
 		}
 	}
+	ctx.db.spawnsBackfilled = true;
 	return results;
 }
 

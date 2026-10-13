@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { open, readdir } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
-import type { ScanContext, ScanResult, UsageEvent, UsageKind } from "./types.ts";
+import type { ScanContext, ScanResult, UsageDb, UsageEvent, UsageKind } from "./types.ts";
 
 const CHUNK_BYTES = 32 * 1024 * 1024;
 const SKILL_URL_RE = /^skill:\/\/([^/:?#\s]+)(?:\/([^/:?#\s]+))?/;
@@ -16,6 +16,8 @@ export interface ParseContext {
 	known: Set<string>;
 	/** Curator archive root; reads of a dormant skill's files there are lazy loads. */
 	archiveDir: string;
+	/** Record a subagent spawned from the named agent definition. */
+	spawn(agent: string, at: string): void;
 }
 
 export interface JsonlParser {
@@ -92,6 +94,66 @@ function emitter(ctx: ScanContext, harness: string, key: string, counter: { adde
 	};
 }
 
+function parseContext(ctx: ScanContext, harness: string, key: string): ParseContext {
+	return {
+		known: ctx.known,
+		archiveDir: ctx.paths.archiveDir,
+		spawn: (agent, at) => (ctx.db.spawns ??= []).push({ agent, at, harness, src: key }),
+	};
+}
+
+/** Drop everything recorded from a file that was rewritten. */
+function forgetSource(db: UsageDb, key: string): void {
+	db.events = db.events.filter(event => event.src !== key);
+	if (db.spawns) db.spawns = db.spawns.filter(spawn => spawn.src !== key);
+}
+
+/** Parse whole lines in `[start, end)`; returns the offset after the last complete line. */
+async function parseRange(handle: FileHandle, start: number, end: number, parser: JsonlParser, ctx: ParseContext, emit: Emit): Promise<number> {
+	let pos = start;
+	let carry = Buffer.alloc(0);
+	while (pos < end) {
+		const length = Math.min(CHUNK_BYTES, end - pos);
+		const chunk = Buffer.alloc(length);
+		const { bytesRead } = await handle.read(chunk, 0, length, pos);
+		if (bytesRead === 0) break;
+		pos += bytesRead;
+		const data = carry.length ? Buffer.concat([carry, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead);
+		const newline = data.lastIndexOf(10);
+		if (newline < 0) {
+			carry = data;
+			continue;
+		}
+		parseLines(data.subarray(0, newline).toString("utf8"), parser, ctx, emit);
+		carry = data.subarray(newline + 1);
+	}
+	return pos - carry.length;
+}
+
+/**
+ * Record agent spawns from history that was scanned before spawns were recorded. Only bytes
+ * already behind each file's cursor are read; anything newer is left to the regular scan,
+ * so no spawn is counted twice. Skill events are not touched.
+ */
+export async function backfillSpawns(ctx: ScanContext, harness: string, files: string[], parser: JsonlParser): Promise<void> {
+	for (const file of files) {
+		const key = `${harness}:${file}`;
+		const cursor = ctx.db.cursors[key];
+		if (!cursor?.offset) continue;
+		let handle: FileHandle;
+		try {
+			handle = await open(file, "r");
+		} catch {
+			continue;
+		}
+		try {
+			await parseRange(handle, 0, cursor.offset, parser, parseContext(ctx, harness, key), () => {});
+		} finally {
+			await handle.close();
+		}
+	}
+}
+
 const sha1 = (data: Uint8Array): string => createHash("sha1").update(data).digest("hex");
 
 /** Bytes before the cursor fingerprinted to detect rewrites that keep or grow the size. */
@@ -117,7 +179,6 @@ export async function scanJsonlFiles(
 	parser: JsonlParser,
 ): Promise<ScanResult> {
 	const { db } = ctx;
-	const parseCtx: ParseContext = { known: ctx.known, archiveDir: ctx.paths.archiveDir };
 	const counter = { added: 0 };
 	let scanned = 0;
 	for (const file of files) {
@@ -136,29 +197,11 @@ export async function scanJsonlFiles(
 				const intact = cursor.ino === info.ino && info.size >= cursor.offset && (await readTail(handle, cursor.offset)) === cursor.tail;
 				if (intact && info.size === cursor.size) continue;
 				if (intact) start = cursor.offset;
-				else db.events = db.events.filter(event => event.src !== key);
+				else forgetSource(db, key);
 			}
 			scanned++;
-			const emit = emitter(ctx, harness, key, counter);
-			let pos = start;
-			let carry = Buffer.alloc(0);
-			while (pos < info.size) {
-				const length = Math.min(CHUNK_BYTES, info.size - pos);
-				const chunk = Buffer.alloc(length);
-				const { bytesRead } = await handle.read(chunk, 0, length, pos);
-				if (bytesRead === 0) break;
-				pos += bytesRead;
-				const data = carry.length ? Buffer.concat([carry, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead);
-				const end = data.lastIndexOf(10);
-				if (end < 0) {
-					carry = data;
-					continue;
-				}
-				parseLines(data.subarray(0, end).toString("utf8"), parser, parseCtx, emit);
-				carry = data.subarray(end + 1);
-			}
+			const offset = await parseRange(handle, start, info.size, parser, parseContext(ctx, harness, key), emitter(ctx, harness, key, counter));
 			// A trailing line without newline is still being written; re-read it next time.
-			const offset = pos - carry.length;
 			db.cursors[key] = { size: offset, mtimeMs: info.mtimeMs, offset, ino: info.ino, tail: await readTail(handle, offset) };
 		} finally {
 			await handle.close();
@@ -179,7 +222,6 @@ export async function scanZstdJsonlFiles(
 	parser: JsonlParser,
 ): Promise<ScanResult> {
 	const { db } = ctx;
-	const parseCtx: ParseContext = { known: ctx.known, archiveDir: ctx.paths.archiveDir };
 	const counter = { added: 0 };
 	let scanned = 0;
 	for (const file of files) {
@@ -203,10 +245,10 @@ export async function scanZstdJsonlFiles(
 			const from = Math.max(0, cursor.offset - TAIL_BYTES);
 			const intact = text.length >= cursor.offset && sha1(text.subarray(from, cursor.offset)) === cursor.tail;
 			if (intact) start = cursor.offset;
-			else db.events = db.events.filter(event => event.src !== key);
+			else forgetSource(db, key);
 		}
 		const end = text.lastIndexOf(10) + 1;
-		if (end > start) parseLines(Buffer.from(text.subarray(start, end)).toString("utf8"), parser, parseCtx, emitter(ctx, harness, key, counter));
+		if (end > start) parseLines(Buffer.from(text.subarray(start, end)).toString("utf8"), parser, parseContext(ctx, harness, key), emitter(ctx, harness, key, counter));
 		const offset = Math.max(start, end);
 		db.cursors[key] = { size: info.size, mtimeMs: info.mtimeMs, offset, tail: sha1(text.subarray(Math.max(0, offset - TAIL_BYTES), offset)) };
 	}

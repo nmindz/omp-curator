@@ -15,6 +15,7 @@ import { DEFAULT_CONFIG, readLedger } from "./store.ts";
 import type { CuratorConfig } from "./store.ts";
 import { ENCODING, openTokenizer, skillTokens } from "./tokens.ts";
 import type { SkillTokens, Tokenizer } from "./tokens.ts";
+import { archiveAgent, assessAgents, purgeAgent, restoreAgent, setAgentPinned, syncAgents } from "./agents.ts";
 
 export interface CliResult {
 	code: number;
@@ -83,6 +84,11 @@ vercel-labs/skills
   update [skill...] [--dry-run]  update GitHub-tracked skills into the OMP store only (-a pi)
   track <skill> <source>         reinstall a store skill from <source> so \`skills\` tracks it (backs up first)
   sources <skill>                find published sources for a skill on skills.sh
+
+Agents (~/.omp/agent/agents/*.md; usage = subagent spawns in OMP and Claude Code history)
+  agents [list] [--state S] [--json]   agents with spawns, last spawn, idle days, autoloaded skills
+  agents archive <agent...> [--reason TEXT]   move definitions to the archive (OMP stops offering them)
+  agents restore <agent...> | agents pin|unpin <agent...> | agents purge <agent...>
 
 Maintenance
   doctor [--fix]              link state, stray harness symlinks, lock drift, invalid SKILL.md files
@@ -286,6 +292,66 @@ async function cmdStatus(curator: Curator): Promise<string> {
 	].join("\n");
 }
 
+type Mutate = <T>(fn: () => Promise<T>) => Promise<T>;
+
+async function cmdAgents(curator: Curator, args: string[], flags: Parsed["flags"], mutate: Mutate): Promise<CliResult> {
+	const [sub = "list", ...names] = args;
+	const each = (fn: (name: string) => Promise<string>) =>
+		mutate(async () => {
+			if (!names.length) throw new Error(`usage: omp-curator agents ${sub} <agent...>`);
+			const lines: string[] = [];
+			for (const name of names) lines.push(await fn(name));
+			return { code: 0, out: lines.join("\n") };
+		});
+	switch (sub) {
+		case "list": {
+			// Record definitions added since the last pass so they show up without one.
+			await syncAgents(curator, "user", true);
+			const state = typeof flags.state === "string" ? flags.state : "all";
+			const rank: Record<Status, number> = { due: 0, stale: 1, active: 2, archived: 3 };
+			const items = (await assessAgents(curator))
+				.filter(item => state === "all" || item.status === state)
+				.sort((a, b) => rank[a.status] - rank[b.status] || b.idleDays - a.idleDays || a.name.localeCompare(b.name));
+			if (flags.json) {
+				return { code: 0, out: JSON.stringify(items.map(({ entry, record, ...rest }) => ({ ...rest, path: record.archive?.path ?? entry?.path, autoloadSkills: entry?.autoloadSkills ?? [] })), null, 2) };
+			}
+			if (!items.length) return { code: 0, out: "no agents match" };
+			const rows = items.map(item => [
+				item.name,
+				item.status,
+				String(item.usage?.spawns ?? 0),
+				day(item.usage?.lastSpawned),
+				String(item.idleDays),
+				Object.entries(item.usage?.byHarness ?? {})
+					.map(([harness, count]) => `${harness}:${count}`)
+					.join(" ") || "-",
+				item.entry?.autoloadSkills.join(", ") || "-",
+				item.pinned ? "pinned" : "",
+			]);
+			return {
+				code: 0,
+				out: table(["agent", "state", "spawns", "last spawn", "idle", "harnesses", "autoloads", "notes"], rows, ["left", "left", "right", "left", "right", "left", "left"]),
+			};
+		}
+		case "archive": {
+			const reason = typeof flags.reason === "string" ? flags.reason : "manual";
+			return each(async name => `archived agent ${name} → ${await archiveAgent(curator, name, reason, "user")}`);
+		}
+		case "restore":
+			return each(async name => `restored agent ${name} → ${await restoreAgent(curator, name, "user")}`);
+		case "pin":
+		case "unpin":
+			return each(async name => {
+				await setAgentPinned(curator, name, sub === "pin", "user");
+				return `${sub === "pin" ? "pinned" : "unpinned"} agent ${name}`;
+			});
+		case "purge":
+			return each(async name => `deleted ${await purgeAgent(curator, name, "user")}`);
+		default:
+			throw new Error(`unknown agents command "${sub}" (list|archive|restore|pin|unpin|purge)`);
+	}
+}
+
 async function cmdShow(curator: Curator, name: string): Promise<string> {
 	const item = (await curator.assess()).find(entry => entry.name === name);
 	if (!item) throw new Error(`unknown skill "${name}"`);
@@ -449,6 +515,8 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
 				for (const name of args) lines.push(`restored ${name} → ${await curator.restore(name, "user")} (listed in new OMP sessions)`);
 				return { code: 0, out: lines.join("\n") };
 			});
+		case "agents":
+			return cmdAgents(curator, args, flags, mutate);
 		case "pin":
 		case "unpin":
 			requireArgs(1, `${command} <skill...>`);

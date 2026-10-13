@@ -1,4 +1,4 @@
-import { SKILL_MD_RE, archivedSkillFromPath, emitMentions, entryTime, listJsonl, scanJsonlFiles, skillFromUrl } from "../jsonl.ts";
+import { SKILL_MD_RE, archivedSkillFromPath, backfillSpawns, emitMentions, entryTime, listJsonl, scanJsonlFiles, skillFromUrl } from "../jsonl.ts";
 import type { JsonlParser } from "../jsonl.ts";
 import type { UsageSource } from "../types.ts";
 
@@ -8,8 +8,8 @@ const SKILL_PROMPT = "skill-prompt";
 export const CURATOR_SKILL = "omp-curator-skill";
 
 export const ompParser: JsonlParser = {
-	needles: ["skill://", `"${SKILL_PROMPT}"`, `"${CURATOR_SKILL}"`, "SKILL.md", "/skills/"],
-	parse(entry, { known, archiveDir }, emit) {
+	needles: ["skill://", `"${SKILL_PROMPT}"`, `"${CURATOR_SKILL}"`, "SKILL.md", "/skills/", '"task"'],
+	parse(entry, { known, archiveDir, spawn }, emit) {
 		const at = entryTime(entry);
 		if (!at) return;
 		if (entry.type === "custom_message" && (entry.customType === SKILL_PROMPT || entry.customType === CURATOR_SKILL)) {
@@ -35,6 +35,9 @@ export const ompParser: JsonlParser = {
 				}
 			} else if (block.name === "bash" && typeof args.command === "string") {
 				emitMentions(args.command, known, at, emit);
+			} else if (block.name === "task" && Array.isArray(args.tasks)) {
+				// Each task names the agent definition it runs; omitted means the built-in `task`.
+				for (const task of args.tasks as Array<{ agent?: unknown }>) spawn(typeof task?.agent === "string" ? task.agent : "task", at);
 			}
 		}
 	},
@@ -48,5 +51,8 @@ export const ompSource: UsageSource = {
 	required: true,
 	async scan(ctx) {
 		return scanJsonlFiles(ctx, "omp", await listJsonl(ctx.paths.sessionsDir), ompParser);
+	},
+	async backfillSpawns(ctx) {
+		await backfillSpawns(ctx, "omp", await listJsonl(ctx.paths.sessionsDir), ompParser);
 	},
 };

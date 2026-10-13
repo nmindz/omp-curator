@@ -1,10 +1,10 @@
-import { SKILL_MD_RE, emitMentions, entryTime, listJsonl, scanJsonlFiles } from "../jsonl.ts";
+import { SKILL_MD_RE, backfillSpawns, emitMentions, entryTime, listJsonl, scanJsonlFiles } from "../jsonl.ts";
 import type { JsonlParser } from "../jsonl.ts";
 import type { UsageSource } from "../types.ts";
 
 export const claudeParser: JsonlParser = {
-	needles: ['"Skill"', "SKILL.md", "/skills/", "<command-name>"],
-	parse(entry, { known }, emit) {
+	needles: ['"Skill"', "SKILL.md", "/skills/", "<command-name>", "subagent_type"],
+	parse(entry, { known, spawn }, emit) {
 		const at = entryTime(entry);
 		const message = entry.message as { content?: unknown } | undefined;
 		if (!at || !message) return;
@@ -26,6 +26,9 @@ export const claudeParser: JsonlParser = {
 				if (name) emit(name, "file", at);
 			} else if (block.name === "Bash" && typeof input.command === "string") {
 				emitMentions(input.command, known, at, emit);
+			} else if ((block.name === "Task" || block.name === "Agent") && typeof input.subagent_type === "string") {
+				// Plugin agents are namespaced (`plugin:agent`), like skills.
+				spawn(input.subagent_type.split(":").pop()!, at);
 			}
 		}
 	},
@@ -37,5 +40,8 @@ export const claudeSource: UsageSource = {
 	locations: paths => [paths.claudeProjectsDir],
 	async scan(ctx) {
 		return scanJsonlFiles(ctx, "claude", await listJsonl(ctx.paths.claudeProjectsDir), claudeParser);
+	},
+	async backfillSpawns(ctx) {
+		await backfillSpawns(ctx, "claude", await listJsonl(ctx.paths.claudeProjectsDir), claudeParser);
 	},
 };

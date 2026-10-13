@@ -266,6 +266,9 @@ Inside OMP, run any command as `/curator <command>`, plus `/curator load <skill>
 | `doctor [--fix]` | nothing / links | Link state, stray `skills` links in other harnesses, lock drift, invalid SKILL.md files. `--fix` removes stray links. |
 | `config [key [value]]` | config | Shows or sets one option; values are JSON. |
 | `init [--dry-run]` / `link` / `unlink` | store, state | First-time setup / the `~/.agents/skills` link alone. |
+| `agents [list] [--state S] [--json]` | nothing | Agent definitions with spawns, last spawn, idle days and the skills they autoload. |
+| `agents archive <agent...> [--reason TEXT]` | agents | Moves definitions out of `~/.omp/agent/agents`, so OMP stops offering them. |
+| `agents restore` / `pin` / `unpin` / `purge <agent...>` | agents | Same as the skill commands, for agents. `purge` deletes archived definitions for good. |
 
 ### List columns
 
@@ -296,6 +299,20 @@ omp-curator list --sort uses,prompt-tok --asc
 
 `--json` also includes `usage.byKind` (uses per evidence kind: `read`, `file`, `command`, `autoload`, `skill-tool`), `usage.mentions`, `usage.firstUsed`, `usage.lastMention`, `pinned` and `path` (the store or archive directory). Without `--sort`, the order is `state,idle`: by state, the longest idle first within each.
 
+## Agents
+
+Agent definitions in `~/.omp/agent/agents/*.md` get the same lifecycle as skills. Their usage is **spawns**: an OMP `task` call naming the agent, or a Claude Code `Task`/`Agent` call with that `subagent_type`. Spawns already in your history are backfilled on the first scan.
+
+Every pass labels agents `active`, `stale` or `due` with the same `staleAfterDays` and `archiveAfterDays` as skills. A new definition gets the usual grace period, counted from its first spawn when the history predates the file. Passes archive `due` agents only when `autoArchiveAgents` is on (off by default), so agents are normally archived by hand:
+
+```sh
+omp-curator agents list --state due        # candidates
+omp-curator agents archive explore-old --reason "redundant with explore"
+omp-curator agents restore explore-old
+```
+
+Archived agents move to `~/.omp/agent/curator/archive-agents/`. Unlike skills, they are not lazy-loaded: OMP cannot spawn an archived agent until it is restored. Archiving an agent does not touch the skills it autoloads; those keep their `autoload` protection only while some active agent still lists them.
+
 ## Working with `skills`
 
 | Goal | Command |
@@ -320,6 +337,7 @@ omp-curator list --sort uses,prompt-tok --asc
 | `archiveAfterDays` | `90` | idle days before `due` |
 | `intervalHours` | `168` | minimum time between automatic passes |
 | `autoArchive` | `true` | archive `due` skills during passes |
+| `autoArchiveAgents` | `false` | also archive `due` agent definitions during passes (needs `autoArchive`) |
 | `lazyLoad` | `true` | keep dormant skills loadable on demand |
 | `hints` | `true` | add prompt hints for matching dormant skills |
 | `hintMinScore` | `10` | minimum match score for a hint (see `omp-curator search`); raise it if hints are noisy, lower it if they never fire |
@@ -340,6 +358,7 @@ omp-curator list --sort uses,prompt-tok --asc
   usage.json     usage events and per-file scan cursors
   ledger.jsonl   every lifecycle change (actor, action, skill, detail)
   archive/       archived skills
+  archive-agents/ archived agent definitions
   backups/       copies taken before `track` replaces a skill
   vocab/         cached o200k_base vocabulary for token counts
   conflicts/     entries parked by `init`/`link`

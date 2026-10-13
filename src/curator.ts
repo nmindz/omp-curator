@@ -1,4 +1,5 @@
 import { rm } from "node:fs/promises";
+import { passAgents } from "./agents.ts";
 import { join } from "node:path";
 import { daysBetween, exists, moveEntry, stamp } from "./fsutil.ts";
 import { INTEGRATIONS } from "./integrations/index.ts";
@@ -356,9 +357,16 @@ export class Curator {
 			}
 		}
 
+		// Agents are labelled every pass; archived only when both switches allow it.
+		transitions.push(...(await passAgents(this, actor, dryRun, allowArchive && this.config.autoArchiveAgents)));
+
 		if (snapshot) {
 			// structuredClone drops the null prototype `loadState` gives the skill map.
-			this.state = { ...snapshot, skills: Object.assign(Object.create(null), snapshot.skills) };
+			this.state = {
+				...snapshot,
+				skills: Object.assign(Object.create(null), snapshot.skills),
+				agents: Object.assign(Object.create(null), snapshot.agents),
+			};
 		} else {
 			this.state.lastRunAt = now;
 			await this.save();

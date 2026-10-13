@@ -11,6 +11,8 @@ export interface CuratorConfig {
 	intervalHours: number;
 	/** When false the automatic pass only labels skills; archiving stays manual. */
 	autoArchive: boolean;
+	/** Also archive `due` agent definitions during automatic passes (off: agents are only labelled). */
+	autoArchiveAgents: boolean;
 	/**
 	 * Archived skills stay loadable: `skill://` reads are redirected to the archive and
 	 * `/skill:` works. When false, archived skills are unreachable until restored.
@@ -40,6 +42,7 @@ export const DEFAULT_CONFIG: CuratorConfig = {
 	archiveAfterDays: 90,
 	intervalHours: 168,
 	autoArchive: true,
+	autoArchiveAgents: false,
 	lazyLoad: true,
 	hints: true,
 	hintMinScore: 10,
@@ -82,11 +85,23 @@ export interface SkillRecord {
 	archive?: ArchiveRecord;
 }
 
+/** Lifecycle of an agent definition (`~/.omp/agent/agents/<name>.md`). */
+export interface AgentRecord {
+	firstSeen: string;
+	/** Idle time is measured from max(last spawn, floor). */
+	floorAt: string;
+	state: SkillState;
+	stateSince: string;
+	pinned?: boolean;
+	archive?: { path: string; at: string; reason: string; pending?: boolean };
+}
+
 export interface CuratorState {
 	version: 1;
 	initializedAt?: string;
 	lastRunAt?: string;
 	skills: Record<string, SkillRecord>;
+	agents: Record<string, AgentRecord>;
 }
 
 export interface LedgerEntry {
@@ -105,9 +120,10 @@ export async function loadConfig(paths: Paths): Promise<CuratorConfig> {
 }
 
 export async function loadState(paths: Paths): Promise<CuratorState> {
-	const state = await readJson<CuratorState>(paths.statePath, { version: 1, skills: {} });
+	const state = await readJson<CuratorState>(paths.statePath, { version: 1, skills: {}, agents: {} });
 	// Skill names are directory names; a skill called `constructor` must not hit Object.prototype.
 	state.skills = Object.assign(Object.create(null) as Record<string, SkillRecord>, state.skills);
+	state.agents = Object.assign(Object.create(null) as Record<string, AgentRecord>, state.agents);
 	return state;
 }
 
