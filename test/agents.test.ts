@@ -116,3 +116,10 @@ describe("agent lifecycle", () => {
 		await expect(cli("agents", "restore", "a")).rejects.toThrow(/is not archived/);
 	});
 });
+
+test("agents added since the last pass can be archived without running one", async () => {
+	box = await sandbox();
+	await addAgent("fresh");
+	expect((await cli("agents", "archive", "fresh")).out).toContain("archived agent fresh");
+	expect((await cli("ledger")).out).toMatch(/agent-archive\s+fresh/);
+});

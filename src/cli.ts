@@ -299,6 +299,8 @@ async function cmdAgents(curator: Curator, args: string[], flags: Parsed["flags"
 	const each = (fn: (name: string) => Promise<string>) =>
 		mutate(async () => {
 			if (!names.length) throw new Error(`usage: omp-curator agents ${sub} <agent...>`);
+			// Record definitions added since the last pass, so they can be archived right away.
+			await syncAgents(curator, "user", false);
 			const lines: string[] = [];
 			for (const name of names) lines.push(await fn(name));
 			return { code: 0, out: lines.join("\n") };
