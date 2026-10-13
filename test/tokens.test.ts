@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { exists } from "../src/fsutil.ts";
 import { openTokenizer } from "../src/tokens.ts";
-import { sandbox } from "./helpers.ts";
+import { daysAgo, ompToolCall, sandbox } from "./helpers.ts";
 import type { Sandbox } from "./helpers.ts";
 
 let box: Sandbox;
@@ -85,5 +85,21 @@ describe("list --tokenize", () => {
 	test("invalid bounds are rejected", async () => {
 		box = await library();
 		await expect(cli("list", "--max-tokens=lots")).rejects.toThrow(/--max-tokens expects/);
+	});
+
+	test("several sort keys apply in order, each with its own direction; missing values sort lowest", async () => {
+		box = await library();
+		// "aaa" is unused like "long" but has a smaller entry; "used" has the biggest entry of all.
+		await box.addSkill("aaa", { description: "A.", body: "x" });
+		await box.addSkill("used", { description: "Use for ".repeat(120), body: "x" });
+		await box.writeJsonl(join(box.paths.sessionsDir, "p", "s.jsonl"), [ompToolCall(daysAgo(box.clock, 1), "read", { path: "skill://used" })]);
+		await (await box.open()).run("user", { allowArchive: false });
+		const order = async (...argv: string[]) =>
+			(JSON.parse((await cli("list", "--json", ...argv)).out) as Array<{ name: string }>).map(row => row.name).filter(name => name !== "short");
+		expect(await order("--sort", "last-used:asc,prompt-tok:desc")).toEqual(["long", "aaa", "used"]);
+		expect(await order("--sort", "last-used:desc,prompt-tok:asc")).toEqual(["used", "aaa", "long"]);
+		// --asc fills in keys without their own direction.
+		expect(await order("--sort", "last-used:asc,prompt-tok", "--asc")).toEqual(["aaa", "long", "used"]);
+		await expect(cli("list", "--sort", "uses:sideways")).rejects.toThrow(/invalid sort direction in "uses:sideways"/);
 	});
 });

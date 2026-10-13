@@ -25,7 +25,7 @@ Report numbers from the tool, never from memory or file timestamps.
 | Machine-readable | add `--json` to `list` |
 | Token cost per skill | `omp-curator tokens`, or `list --sort prompt-tok` / `--sort skillmd-tok` (`--asc` / `--desc`) |
 
-`list --sort` takes any column key: `skill`, `state`, `uses`, `last-used`, `idle`, `harnesses`, `prompt-tok`, `skillmd-tok`, `notes`.
+`list --sort` takes one or more column keys, applied in order, each optionally `:asc` or `:desc`: `skill`, `state`, `uses`, `last-used`, `idle`, `harnesses`, `prompt-tok`, `skillmd-tok`, `notes`. Missing values sort lowest. Example: `omp-curator list --sort last-used:asc,prompt-tok:desc` lists never-used skills first, most expensive first.
 
 Usage counts only structured invocations, backfilled from every session already on disk: OMP `skill://` reads, SKILL.md reads, `/skill:` commands and subagent `autoloadSkills`; Claude Code `Skill` tool calls and slash commands; OpenCode and DSH `skill` tool calls; Codex `$skill` invocations and shell reads of a SKILL.md. Shell commands that merely touch a skill directory are tallied as *mentions* and never count as use. `idle` is measured from the later of the last use and the time the skill became available, so a newly installed skill is never instantly stale.
 

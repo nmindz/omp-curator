@@ -248,7 +248,7 @@ Inside OMP, run any command as `/curator <command>`, plus `/curator load <skill>
 |---|---|---|
 | `status` | nothing | Store, link, counts per state, last pass and next automatic pass, longest idle skills. |
 | `tokens` | nothing | Token totals and averages per state: each skill's system-prompt entry and its full SKILL.md. |
-| `list [--state S] [--sort COLUMN] [--asc\|--desc] [--json]` | nothing | Skills with uses, last use, idle days and harnesses. `S`: `active`, `stale`, `due`, `archived`, `all`. `--sort` takes any [column key](#list-columns); `--asc`/`--desc` override its default direction. |
+| `list [--state S] [--sort KEY[:asc\|:desc][,KEY…]] [--asc\|--desc] [--json]` | nothing | Skills with uses, last use, idle days and harnesses. `S`: `active`, `stale`, `due`, `archived`, `all`. `--sort` takes one or more [column keys](#list-columns), applied in order. |
 | `list … --tokenize [--min-tokens N] [--max-tokens N] [--by prompt\|body]` | nothing | Adds `prompt tok` and `SKILL.md tok` columns and a total/average line. The bounds keep skills within a token range, on the prompt entry (default) or the whole SKILL.md with `--by body`. Bounds and sorting by a token column imply `--tokenize`. |
 | `show <skill>` | nothing | State, origin, use counts by kind and recent evidence for one skill. |
 | `search <query...>` | nothing | Dormant skills matching task keywords, with match scores. |
@@ -269,12 +269,23 @@ Inside OMP, run any command as `/curator <command>`, plus `/curator load <skill>
 
 ### List columns
 
-`--sort` takes the key of any `list` column. Ties are broken by skill name. Without `--asc` or `--desc`, each column uses the direction that puts the most telling skills first.
+`--sort` takes one or more column keys separated by commas, applied in order: each key only orders the skills the previous keys left tied, and the skill name breaks the final ties. Give a key a direction with `:asc` or `:desc`; a key without one uses `--asc`/`--desc` if given, otherwise its column's default below. A missing value (no last use, no notes) counts as the lowest, so it comes first in `asc` and last in `desc`.
+
+```sh
+# Never-used skills first, the most expensive prompt entries at the top among them
+omp-curator list --sort last-used:asc,prompt-tok:desc
+
+# Per state, the biggest SKILL.md files first
+omp-curator list --sort state,skillmd-tok:desc
+
+# Both keys ascending
+omp-curator list --sort uses,prompt-tok --asc
+```
 
 | Column | `--sort` key | Default | `--json` field | Meaning |
 |---|---|---|---|---|
 | `skill` | `skill` | asc | `name` | Store directory name |
-| `state` | `state` | asc (`due`, `stale`, `active`, `archived`; longest idle first within each) | `status` | Lifecycle state |
+| `state` | `state` | asc (`due`, `stale`, `active`, `archived`) | `status` | Lifecycle state |
 | `uses` | `uses` | desc | `usage.uses` | Recorded uses, all harnesses |
 | `last used` | `last-used` | desc (most recent first) | `usage.lastUsed` | Time of the last use |
 | `idle` | `idle` | desc | `idleDays` (from `idleSince`) | Days since the later of the last use and the skill becoming available |
@@ -283,7 +294,7 @@ Inside OMP, run any command as `/curator <command>`, plus `/curator load <skill>
 | `SKILL.md tok` | `skillmd-tok` | desc | `tokens.body` | Tokens of the whole SKILL.md (with `--tokenize`) |
 | `notes` | `notes` | asc | `protectedBy`, `origin` | Why it is protected from archiving, and where it was installed from |
 
-`--json` also includes `usage.byKind` (uses per evidence kind: `read`, `file`, `command`, `autoload`, `skill-tool`), `usage.mentions`, `usage.firstUsed`, `usage.lastMention`, `pinned` and `path` (the store or archive directory). The default sort is `state`.
+`--json` also includes `usage.byKind` (uses per evidence kind: `read`, `file`, `command`, `autoload`, `skill-tool`), `usage.mentions`, `usage.firstUsed`, `usage.lastMention`, `pinned` and `path` (the store or archive directory). Without `--sort`, the order is `state,idle`: by state, the longest idle first within each.
 
 ## Working with `skills`
 

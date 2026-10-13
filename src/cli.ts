@@ -58,8 +58,11 @@ Usage and lifecycle
   status                      store, link, last pass, counts per state
   tokens                      prompt and SKILL.md token totals and averages per state
   list [--state S] [--json]   skills with uses, last use, idle days (S: active|stale|due|archived|all)
-       [--sort COLUMN]        sort by a column: skill|state|uses|last-used|idle|harnesses|prompt-tok|
-       [--asc | --desc]       skillmd-tok|notes (default state; each has a natural direction)
+       [--sort KEY[:asc|:desc][,KEY…]]
+                              sort by one or more columns, in order: skill|state|uses|last-used|idle|
+                              harnesses|prompt-tok|skillmd-tok|notes; missing values sort lowest
+                              (default state,idle). --asc/--desc set keys without a direction.
+       [--asc | --desc]
        [--tokenize]           add exact token counts (o200k_base): prompt entry and full SKILL.md
        [--min-tokens N] [--max-tokens N] [--by prompt|body]
                               keep skills within a token range (implies --tokenize; --by picks
@@ -109,19 +112,12 @@ interface Column {
 }
 
 const STATE_RANK: Record<Status, number> = { due: 0, stale: 1, active: 2, archived: 3 };
-const tokenValue = (tokens: TokenMap | undefined, item: Assessment, measure: keyof SkillTokens) => tokens?.get(item.name)?.[measure] ?? 0;
+// A skill without counts (no SKILL.md) sorts below any counted one, like other missing values.
+const tokenValue = (tokens: TokenMap | undefined, item: Assessment, measure: keyof SkillTokens) => tokens?.get(item.name)?.[measure] ?? -1;
 
 export const LIST_COLUMNS: readonly Column[] = [
 	{ key: "skill", header: "skill", align: "left", desc: false, cell: item => item.name, compare: (a, b) => a.name.localeCompare(b.name) },
-	{
-		key: "state",
-		header: "state",
-		align: "left",
-		desc: false,
-		cell: item => item.status,
-		// Within a state, the longest idle first.
-		compare: (a, b) => STATE_RANK[a.status] - STATE_RANK[b.status] || b.idleDays - a.idleDays,
-	},
+	{ key: "state", header: "state", align: "left", desc: false, cell: item => item.status, compare: (a, b) => STATE_RANK[a.status] - STATE_RANK[b.status] },
 	{ key: "uses", header: "uses", align: "right", desc: true, cell: item => String(item.usage?.uses ?? 0), compare: (a, b) => (a.usage?.uses ?? 0) - (b.usage?.uses ?? 0) },
 	{
 		key: "last-used",
@@ -154,15 +150,41 @@ export const LIST_COLUMNS: readonly Column[] = [
 	{ key: "notes", header: "notes", align: "left", desc: false, cell: notesText, compare: (a, b) => notesText(a).localeCompare(notesText(b)) },
 ];
 
-function sortColumn(key: string): Column {
-	const column = LIST_COLUMNS.find(candidate => candidate.key === key);
-	if (!column) throw new Error(`unknown sort key "${key}" (${LIST_COLUMNS.map(candidate => candidate.key).join("|")})`);
-	return column;
+export interface SortKey {
+	column: Column;
+	descending: boolean;
 }
 
-function sortItems(items: Assessment[], column: Column, descending: boolean, tokens?: TokenMap): Assessment[] {
-	const sign = descending ? -1 : 1;
-	return [...items].sort((a, b) => sign * column.compare(a, b, tokens) || a.name.localeCompare(b.name));
+/** Default order: by state, the longest idle first within each. */
+const DEFAULT_SORT = "state,idle";
+
+/**
+ * Parse `key[:asc|:desc][,key[:asc|:desc]…]`. Keys apply in order, each breaking the ties of
+ * the previous one. A key without a direction takes `fallback` (from `--asc`/`--desc`) or its
+ * column's default.
+ */
+export function parseSort(spec: string, fallback?: "asc" | "desc"): SortKey[] {
+	return spec.split(",").map(part => {
+		const [key = "", direction, ...extra] = part.trim().split(":");
+		const column = LIST_COLUMNS.find(candidate => candidate.key === key);
+		if (!column) throw new Error(`unknown sort key "${key}" (${LIST_COLUMNS.map(candidate => candidate.key).join("|")})`);
+		if (extra.length || (direction !== undefined && direction !== "asc" && direction !== "desc")) {
+			throw new Error(`invalid sort direction in "${part.trim()}" (use ${key}:asc or ${key}:desc)`);
+		}
+		const chosen = direction ?? fallback;
+		return { column, descending: chosen ? chosen === "desc" : column.desc };
+	});
+}
+
+/** Missing values (no last use, no token count, no notes) compare as the lowest. Final ties: skill name. */
+function sortItems(items: Assessment[], keys: SortKey[], tokens?: TokenMap): Assessment[] {
+	return [...items].sort((a, b) => {
+		for (const { column, descending } of keys) {
+			const order = column.compare(a, b, tokens);
+			if (order) return descending ? -order : order;
+		}
+		return a.name.localeCompare(b.name);
+	});
 }
 
 function renderList(items: Assessment[], tokens?: TokenMap): string {
@@ -377,9 +399,8 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
 			return { code: 0, out: await cmdTokens(curator) };
 		case "list": {
 			const state = typeof flags.state === "string" ? flags.state : "all";
-			const column = sortColumn(typeof flags.sort === "string" ? flags.sort : "state");
 			if (flags.asc && flags.desc) throw new Error("use either --asc or --desc");
-			const descending = flags.asc ? false : flags.desc ? true : column.desc;
+			const keys = parseSort(typeof flags.sort === "string" ? flags.sort : DEFAULT_SORT, flags.asc ? "asc" : flags.desc ? "desc" : undefined);
 			const bound = (flag: string) => {
 				const raw = flags[flag];
 				if (raw === undefined) return undefined;
@@ -393,14 +414,15 @@ export async function runCli(argv: string[], options: CliOptions = {}): Promise<
 			if (measure !== "prompt" && measure !== "body") throw new Error(`--by expects prompt or body`);
 			let items = (await curator.assess()).filter(item => state === "all" || item.status === state);
 			// Token filters and token columns need counts, so they imply --tokenize.
-			const counted = flags.tokenize || min !== undefined || max !== undefined || column.tokens ? await tokenize(curator, items) : undefined;
+			const counted =
+				flags.tokenize || min !== undefined || max !== undefined || keys.some(key => key.column.tokens) ? await tokenize(curator, items) : undefined;
 			if (counted) {
 				items = items.filter(item => {
 					const value = counted.tokens.get(item.name)?.[measure] ?? 0;
 					return (min === undefined || value >= min) && (max === undefined || value <= max);
 				});
 			}
-			items = sortItems(items, column, descending, counted?.tokens);
+			items = sortItems(items, keys, counted?.tokens);
 			if (flags.json) {
 				const rows = items.map(({ entry, record, ...rest }) => ({ ...rest, path: record.archive?.path ?? entry?.path, ...(counted ? { tokens: counted.tokens.get(rest.name) } : {}) }));
 				return { code: 0, out: JSON.stringify(rows, null, 2) };

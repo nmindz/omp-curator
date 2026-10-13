@@ -42,6 +42,16 @@ describe("cli", () => {
 		expect((await cli("ledger")).out).toMatch(/archive\s+idle\s+test/);
 	});
 
+	test("the default list order is by state, the longest idle first within each", async () => {
+		box = await sandbox();
+		await box.addSkill("a-newer", { createdDaysAgo: 100 });
+		await box.addSkill("b-older", { createdDaysAgo: 200 });
+		await box.addSkill("c-fresh", { createdDaysAgo: 1 });
+		await cli("init");
+		const names = (JSON.parse((await cli("list", "--json")).out) as Array<{ name: string }>).map(row => row.name);
+		expect(names).toEqual(["b-older", "a-newer", "c-fresh"]);
+	});
+
 	test("init adopts history: a skill migrated into the store today but last used long ago is idle from its last use", async () => {
 		box = await sandbox();
 		await box.addSkill("migrated");
