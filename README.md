@@ -317,13 +317,13 @@ Archived agents move to `~/.omp/agent/curator/archive-agents/`. Unlike skills, t
 
 | Goal | Command |
 |---|---|
-| Install into OMP only | `skills add <source> --skill <name> -g -a pi -y` |
+| Install into OMP only | `skills add <source> --skill <name> -g -a omp -y` |
 | Update tracked skills | `omp-curator update` |
 | Find an upstream for a hand-copied skill | `omp-curator sources <skill>` |
 | Put it under version tracking | `omp-curator track <skill> <source>` (backs up the current copy first) |
 | List everything | `skills ls -g` |
 
-`-a pi` matters. `pi` is a *universal* `skills` agent, so the install lands only in `~/.agents/skills`, which is the OMP store. Without `-a`, `skills add` and a bare `skills update` symlink the skill into every harness it detects (`~/.claude/skills`, `~/.gemini/skills`, …). `omp-curator update` re-runs installs with `-a pi`, and `omp-curator doctor --fix` removes stray links that point into the store.
+`-a omp` matters. The `omp` agent comes from the [nmindz/skills](https://github.com/nmindz/skills) fork (`mise use -g npm:github:nmindz/skills@omp`); upstream `skills` has no OMP agent. The install lands in `~/.agents/skills`, which is the OMP store, and the fork detects an OMP session (`OMPCODE=1`), so a bare `skills add` from OMP targets OMP instead of Claude Code. Without `-a`, `skills add` and a bare `skills update` outside OMP symlink the skill into every harness they detect (`~/.claude/skills`, `~/.gemini/skills`, …). `omp-curator update` re-runs installs with `-a omp`, and `omp-curator doctor --fix` removes stray links that point into the store.
 
 `update` and `track` refuse to install while `~/.agents/skills` is not linked to the store, because the install would land outside OMP while the lock reports it as current.
 

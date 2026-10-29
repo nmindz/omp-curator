@@ -133,7 +133,7 @@ describe("update", () => {
 		expect(folderHashFromTree(tree, "skills/two/SKILL.md")).toBeUndefined();
 	});
 
-	test("checks each tree once, reinstalls only changed skills with -a pi", async () => {
+	test("checks each tree once, reinstalls only changed skills with -a omp", async () => {
 		box = await sandbox();
 		await writeLock(box.paths, {
 			version: 3,
@@ -165,7 +165,7 @@ describe("update", () => {
 		await linkAgentsDir(box.paths, false);
 		const real = await updateSkills(box.paths, "skills", { dryRun: false, active, names: ["two"] }, deps);
 		expect(real).toEqual([{ name: "two", status: "updated", detail: undefined }]);
-		expect(calls).toEqual([["add", "acme/skills/skills/two", "--skill", "two", "-g", "-a", "pi", "-y"]]);
+		expect(calls).toEqual([["add", "acme/skills/skills/two", "--skill", "two", "-g", "-a", "omp", "-y"]]);
 		expect(fetches).toBe(2);
 	});
 

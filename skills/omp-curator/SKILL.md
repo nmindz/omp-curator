@@ -48,8 +48,8 @@ Dormant skills are not in your skill list but load normally: `read skill://<name
 
 ## Installing and updating skills (vercel-labs/skills)
 
-- Install into OMP only: `skills add <source> --skill <name> -g -a pi -y`. `pi` is a universal agent, so files land only in the OMP store. Omitting `-a` symlinks the skill into every detected harness (`~/.claude/skills`, …).
-- Update: prefer `omp-curator update [skill...]` (checks GitHub tree hashes, reinstalls with `-a pi`). A bare `skills update` re-adds symlinks for every detected harness; clean them with `omp-curator doctor --fix`.
+- Install into OMP only: `skills add <source> --skill <name> -g -a omp -y`. The `omp` agent comes from the nmindz/skills fork installed by mise; files land only in the OMP store. Inside an OMP session the fork targets OMP even without `-a`; elsewhere, omitting `-a` symlinks the skill into every detected harness (`~/.claude/skills`, …).
+- Update: prefer `omp-curator update [skill...]` (checks GitHub tree hashes, reinstalls with `-a omp`). A bare `skills update` outside OMP re-adds symlinks for every detected harness; clean them with `omp-curator doctor --fix`.
 - Track a skill that was copied in by hand: `omp-curator sources <skill>` lists published sources on skills.sh; `omp-curator track <skill> <source>` reinstalls it from that source after backing up the current copy.
 - `skills ls -g` lists every OMP skill because `~/.agents/skills` points at the store.
 

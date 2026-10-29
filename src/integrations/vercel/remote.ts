@@ -60,11 +60,11 @@ export function folderHashFromTree(tree: GithubTree, skillPath: string): string 
 }
 
 /**
- * `-a pi` targets a universal `skills` agent, so the install lands only in `~/.agents/skills`
- * (the OMP store). A bare `skills update` instead symlinks every detected harness.
+ * `-a omp` (nmindz/skills fork) targets only OMP; its copy lands in `~/.agents/skills`, the
+ * store link, so the omp link resolves onto itself. A bare `skills update` symlinks every harness.
  */
 export function installArgs(source: string, name: string): string[] {
-	return ["add", source, "--skill", name, "-g", "-a", "pi", "-y"];
+	return ["add", source, "--skill", name, "-g", "-a", "omp", "-y"];
 }
 
 export interface UpdateItem {

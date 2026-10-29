@@ -81,7 +81,7 @@ Usage and lifecycle
   ledger [--limit N]          recent lifecycle changes
 
 vercel-labs/skills
-  update [skill...] [--dry-run]  update GitHub-tracked skills into the OMP store only (-a pi)
+  update [skill...] [--dry-run]  update GitHub-tracked skills into the OMP store only (-a omp)
   track <skill> <source>         reinstall a store skill from <source> so \`skills\` tracks it (backs up first)
   sources <skill>                find published sources for a skill on skills.sh
 
